@@ -4,20 +4,33 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'providers/auth_provider.dart';
 import 'providers/cart_provider.dart';
+import 'providers/theme_provider.dart';
 import 'screens/admin/admin_shell.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/client/client_shell.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/splash_screen.dart';
 import 'theme.dart';
+import 'utils/cache_manager.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize cache manager for image and data caching
+  try {
+    final cache = CacheManager();
+    await cache.init();
+  } catch (e) {
+    // Cache initialization is not critical
+    debugPrint('Cache init warning: $e');
+  }
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()..init()),
         ChangeNotifierProvider(create: (_) => CartProvider()),
+        ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
       ],
       child: const IvrivriiApp(),
     ),
@@ -29,11 +42,17 @@ class IvrivriiApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Ivrivrii Chicken',
-      debugShowCheckedModeBanner: false,
-      theme: buildTheme(),
-      home: const _Root(),
+    return Consumer<ThemeProvider>(
+      builder: (_, themeProvider, __) {
+        return MaterialApp(
+          title: 'Ivrivrii Chicken',
+          debugShowCheckedModeBanner: false,
+          theme: buildLightTheme(),
+          darkTheme: buildDarkTheme(),
+          themeMode: themeProvider.themeMode,
+          home: const _Root(),
+        );
+      },
     );
   }
 }
