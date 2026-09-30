@@ -54,7 +54,7 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
   Future<void> _getCurrentLocation() async {
     if (!_permGranted) {
       final status = await Geolocator.requestPermission();
-      if (status.isDenied || status.isPermanentlyDenied) {
+      if (status != LocationPermission.whileInUse && status != LocationPermission.always) {
         if (mounted) showMessage(context, 'Permission de localisation refusée', error: true);
         return;
       }
@@ -62,7 +62,7 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
     setState(() => _loading = true);
     try {
       final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 10)),
+        timeLimit: const Duration(seconds: 10),
       );
       if (!mounted) return;
       setState(() {
