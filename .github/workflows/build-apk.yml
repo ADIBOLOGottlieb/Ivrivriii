@@ -1,0 +1,36 @@
+# Compile l'APK Android sur les serveurs de GitHub (utile si Windows bloque Flutter).
+# GitHub → onglet « Actions » → « Build APK » → « Run workflow », puis téléchargez l'APK
+# dans la section « Artifacts » du résultat.
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "Adresse de l'API (ex : http://192.168.1.78:4000 ou https://mon-api.com)"
+        required: true
+        default: "http://192.168.1.78:4000"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter test
+      - run: flutter build apk --release --dart-define=API_URL=${{ github.event.inputs.api_url }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ivrivrii-chicken-apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk

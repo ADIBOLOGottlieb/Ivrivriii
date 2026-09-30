@@ -1,0 +1,21 @@
+# Backend : dépendances, base de données (comptes clients) et photos envoyées
+backend/node_modules/
+backend/*.db
+backend/*.db-*
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Flutter / Android (compléments de mobile/.gitignore)
+mobile/build/
+mobile/.dart_tool/
+mobile/android/local.properties
+mobile/android/key.properties
+*.jks
+*.keystore
+
+# Éditeurs / système
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
