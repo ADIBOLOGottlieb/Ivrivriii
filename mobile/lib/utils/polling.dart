@@ -100,9 +100,9 @@ class RequestDeduplicator<T> {
     final future = request().then((result) {
       _pending.remove(key);
       return result;
-    }).catchError((e) {
+    }, onError: (Object e, StackTrace st) {
       _pending.remove(key);
-      rethrow;
+      return Future<T>.error(e, st);
     });
 
     _pending[key] = future;

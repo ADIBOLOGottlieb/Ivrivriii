@@ -202,6 +202,7 @@ class ErrorState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return EnhancedEmptyState(
+      emoji: '⚠️',
       icon: Icons.error_outline_rounded,
       iconColor: Theme.of(context).colorScheme.error,
       title: title ?? 'Une erreur est survenue',
@@ -288,6 +289,7 @@ class NetworkErrorState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return EnhancedEmptyState(
+      emoji: '📡',
       icon: Icons.wifi_off_rounded,
       iconColor: Theme.of(context).colorScheme.error,
       title: 'Pas de connexion',
@@ -317,6 +319,7 @@ class UnauthorizedState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return EnhancedEmptyState(
+      emoji: '🔒',
       icon: Icons.lock_outline_rounded,
       iconColor: Theme.of(context).colorScheme.error,
       title: 'Accès refusé',
