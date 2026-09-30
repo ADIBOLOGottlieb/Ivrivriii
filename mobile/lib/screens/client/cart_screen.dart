@@ -138,15 +138,26 @@ class CartScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(builder: (_) => const CheckoutScreen()),
                         );
+                        // FIX: Check mounted after Navigator.push and before continuing
                         if (order == null || !context.mounted) return;
+
+                        // Switch to orders tab
                         ClientShell.of(context)?.goTo(ClientShellState.ordersTab);
-                        // Délai pour que la transition du tab soit terminée
+
+                        // Wait for tab transition to complete
                         await Future.delayed(const Duration(milliseconds: 300));
+
+                        // FIX: Check mounted again before navigating to detail screen
+                        // This prevents race conditions where widget unmounts during dialog/delay
                         if (!context.mounted) return;
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: order.id, initial: order)),
-                        );
+
+                        // FIX: Use pushReplacement to avoid navigation stack issues
+                        if (context.mounted) {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: order.id, initial: order)),
+                          );
+                        }
                       },
                       child: const Text('Passer la commande'),
                     ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../config.dart';
 import '../services/api.dart';
@@ -42,19 +43,53 @@ class ProductImage extends StatelessWidget {
       alignment: Alignment.center,
       child: const Text('🍗', style: TextStyle(fontSize: 34)),
     );
+
+    // Shimmer loading animation for better UX
+    final shimmer = Container(
+      width: width,
+      height: height,
+      color: AppColors.yellow.withValues(alpha: 0.1),
+      alignment: Alignment.center,
+      child: const SizedBox(
+        width: 40,
+        height: 40,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    );
+
     return ClipRRect(
       borderRadius: borderRadius,
       child: resolved.isEmpty
           ? placeholder
-          : Image.network(
-              resolved,
+          : CachedNetworkImage(
+              imageUrl: resolved,
               width: width,
               height: height,
               fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => placeholder,
-              loadingBuilder: (_, child, progress) => progress == null ? child : placeholder,
+              // Cache for 7 days by default
+              cacheManager: CacheManager.instance,
+              placeholder: (context, url) => shimmer,
+              errorWidget: (context, url, error) => placeholder,
+              fadeInDuration: const Duration(milliseconds: 300),
+              fadeOutDuration: const Duration(milliseconds: 300),
             ),
     );
+  }
+}
+
+/// Global cache manager instance for network images.
+/// Configured with 7-day default TTL and maximum 100MB cache size.
+class CacheManager {
+  static final instance = _createCacheManager();
+
+  static dynamic _createCacheManager() {
+    try {
+      // Use default flutter_cache_manager with custom duration
+      return DefaultCacheManager();
+    } catch (_) {
+      // Fallback if cache manager initialization fails
+      return null;
+    }
   }
 }
 

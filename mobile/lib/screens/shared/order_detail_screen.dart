@@ -7,6 +7,7 @@ import '../../models.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
+import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 
@@ -34,8 +35,22 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     super.initState();
     _order = widget.initial;
     _load();
+    // FIX: Only create timer if order is not already finished
+    // This prevents unnecessary polling for completed orders
+    if (_order == null || !_order!.isFinished) {
+      _startPolling();
+    }
+  }
+
+  void _startPolling() {
     _timer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (_order != null && !_order!.isFinished) _load();
+      // FIX: Check if order is finished and cancel timer if so
+      if (_order != null && _order!.isFinished) {
+        _timer?.cancel();
+        _timer = null;
+      } else if (mounted) {
+        _load();
+      }
     });
   }
 
@@ -52,6 +67,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       setState(() {
         _order = o;
         _error = null;
+        // FIX: Check if order just finished and stop polling if so
+        if (o.isFinished) {
+          _timer?.cancel();
+          _timer = null;
+        }
       });
     } catch (e) {
       if (mounted) setState(() => _error = e);

@@ -28,7 +28,7 @@ class GpsPickerScreen extends StatefulWidget {
 }
 
 class _GpsPickerScreenState extends State<GpsPickerScreen> {
-  late GoogleMapController _mapController;
+  GoogleMapController? _mapController;
   double? _lat;
   double? _lng;
   double? _accuracy;
@@ -72,7 +72,10 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
         _error = null;
         _updateMarker();
       });
-      _mapController.animateCamera(CameraUpdate.newLatLng(LatLng(_lat!, _lng!)));
+      // FIX: Check if map controller is initialized before animating
+      if (mounted && _mapController != null) {
+        _mapController!.animateCamera(CameraUpdate.newLatLng(LatLng(_lat!, _lng!)));
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'Impossible de récupérer votre position : $e');
@@ -122,7 +125,12 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
         children: [
           GoogleMap(
             initialCameraPosition: CameraPosition(target: LatLng(_lat!, _lng!), zoom: 15),
-            onMapCreated: (c) => _mapController = c,
+            // FIX: Safely store map controller and check if mounted
+            onMapCreated: (c) {
+              if (mounted) {
+                _mapController = c;
+              }
+            },
             onTap: _onMapTap,
             markers: _markers,
             myLocationButtonEnabled: false,
@@ -217,7 +225,8 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
 
   @override
   void dispose() {
-    _mapController.dispose();
+    // FIX: Only dispose if controller is initialized
+    _mapController?.dispose();
     super.dispose();
   }
 }

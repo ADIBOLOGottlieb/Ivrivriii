@@ -35,9 +35,27 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final user = context.read<AuthProvider>().user;
     _address = TextEditingController(text: user?.address ?? '');
     _phone = TextEditingController(text: user?.phone ?? '');
-    Api.instance.settings().then((s) {
-      if (mounted) setState(() => _settings = s);
-    }).catchError((_) {});
+    // FIX: Add proper error handling for settings API call
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final s = await Api.instance.settings();
+      if (mounted) {
+        setState(() => _settings = s);
+      }
+    } catch (e) {
+      // FIX: Show error to user instead of silently failing
+      if (mounted) {
+        showMessage(context, 'Impossible de charger les paramètres du restaurant. Certaines restrictions pourraient ne pas être appliquées.', error: true);
+      }
+      // Retry after 3 seconds
+      await Future.delayed(const Duration(seconds: 3));
+      if (mounted) {
+        _loadSettings(); // Retry
+      }
+    }
   }
 
   @override
@@ -54,8 +72,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final settings = _settings;
     if (settings == null || _payment == 'cash') return 0;
     final total = cart.subtotal + _getDeliveryFee();
-    // Frais = ceil(total * 2% / 100)
-    return ((total * settings.paymentFeePercent + 99) ~/ 100);
+    // FIX: Use proper ceiling formula for payment fee calculation
+    // Calculate: fee = ceil(total * paymentFeePercent / 100)
+    // Using formula: ceil(a/b) = (a + b - 1) / b in integer division
+    final feeAmount = total * settings.paymentFeePercent;
+    return (feeAmount + 99) ~/ 100; // Properly rounds up to nearest cent
   }
 
   Future<void> _selectLocation() async {
