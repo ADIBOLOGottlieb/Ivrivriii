@@ -125,10 +125,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           icon: const Text('🎉', style: TextStyle(fontSize: 48)),
           title: const Text('Commande envoyée !'),
           content: Text(
-            'Votre commande n°${order.id} a bien été reçue. '
-            (isMobileMoney(order.paymentMethod)
-                ? 'Réglez-la maintenant par ${paymentLabel(order.paymentMethod)} pour que le restaurant la lance.'
-                : 'Vous pouvez suivre sa préparation en temps réel.'),
+            'Votre commande n°${order.id} a bien été reçue. ${isMobileMoney(order.paymentMethod) ? 'Réglez-la maintenant par ${paymentLabel(order.paymentMethod)} pour que le restaurant la lance.' : 'Vous pouvez suivre sa préparation en temps réel.'}',
             textAlign: TextAlign.center,
           ),
           actions: [

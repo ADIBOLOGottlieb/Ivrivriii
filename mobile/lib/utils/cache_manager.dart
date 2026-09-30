@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:async';
@@ -134,9 +135,4 @@ class CacheManager {
       // Silently fail
     }
   }
-}
-
-void debugPrint(String message) {
-  // In a real app, use proper logging
-  print(message);
 }

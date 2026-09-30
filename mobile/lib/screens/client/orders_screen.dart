@@ -94,8 +94,8 @@ class _OrdersScreenState extends State<OrdersScreen> {
           ? ErrorRetry(error: _error!, onRetry: _load)
           : const Center(child: CircularProgressIndicator());
     } else if (orders.isEmpty) {
-      body = const ListView(
-        children: [
+      body = ListView(
+        children: const [
           SizedBox(height: 80),
           EmptyState(
             emoji: '🧾',
@@ -138,7 +138,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
     }
 
     return Scaffold(
-      appBar: const AppBar(title: Text('Mes commandes')),
+      appBar: AppBar(title: const Text('Mes commandes')),
       body: RefreshIndicator(onRefresh: () => _load(silent: false), child: body),
     );
   }

@@ -58,9 +58,7 @@ class ThemeProvider extends ChangeNotifier {
       return false;
     } else {
       // System mode - check device brightness
-      return WidgetsBinding.instance.window.platformDispatcher.views.first
-              .mediumQuery?.platformData.platformBrightness ==
-          Brightness.dark;
+      return WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark;
     }
   }
 }
