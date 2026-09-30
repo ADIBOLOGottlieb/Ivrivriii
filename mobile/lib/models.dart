@@ -191,7 +191,7 @@ class AppSettings {
   final bool isOpen;
   final String restaurantPhone;
   final String restaurantAddress;
-  final int paymentFeePercent;
+  final double paymentFeePercent;
   final String paymentMode; // 'test' ou 'live'
 
   AppSettings({
@@ -210,7 +210,7 @@ class AppSettings {
         isOpen: j['is_open'] == true,
         restaurantPhone: j['restaurant_phone'] ?? '',
         restaurantAddress: j['restaurant_address'] ?? '',
-        paymentFeePercent: _int(j['payment_fee_percent']),
+        paymentFeePercent: (j['payment_fee_percent'] as num?)?.toDouble() ?? 2,
         paymentMode: j['payment_mode'] ?? 'test',
       );
 

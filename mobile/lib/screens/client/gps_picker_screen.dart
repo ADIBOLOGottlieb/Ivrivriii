@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../theme.dart';
-import '../../utils/format.dart';
 import '../../widgets/common.dart';
 
 class LocationData {
@@ -16,7 +16,9 @@ class LocationData {
   Map<String, dynamic> toJson() => {'lat': lat, 'lng': lng, 'accuracy': accuracy};
 }
 
-/// Écran pour sélectionner la localisation GPS. Retourne [LocationData] via Navigator.pop.
+/// Choix de la position de livraison sur une carte OpenStreetMap (aucune clé API requise).
+/// L'épingle reste au centre : le client fait glisser la carte ou utilise « Ma position ».
+/// Renvoie un [LocationData] via `Navigator.pop`.
 class GpsPickerScreen extends StatefulWidget {
   final double? initialLat;
   final double? initialLng;
@@ -28,192 +30,201 @@ class GpsPickerScreen extends StatefulWidget {
 }
 
 class _GpsPickerScreenState extends State<GpsPickerScreen> {
-  GoogleMapController? _mapController;
-  double? _lat;
-  double? _lng;
+  static const _lome = LatLng(6.1319, 1.2228);
+
+  final _map = MapController();
+  late LatLng _center;
   double? _accuracy;
-  String? _error;
-  bool _loading = false;
-  bool _permGranted = false;
-  final Set<Marker> _markers = {};
+  bool _locating = false;
+  bool _moving = false;
 
   @override
   void initState() {
     super.initState();
-    _lat = widget.initialLat ?? 6.1319; // Lomé, Togo (par défaut)
-    _lng = widget.initialLng ?? 1.2228;
-    _updateMarker();
-    _checkPermission();
+    final hasInitial = widget.initialLat != null && widget.initialLng != null;
+    _center = hasInitial ? LatLng(widget.initialLat!, widget.initialLng!) : _lome;
+    // Première ouverture : on tente directement la position du téléphone.
+    if (!hasInitial) WidgetsBinding.instance.addPostFrameCallback((_) => _locate(silent: true));
   }
 
-  Future<void> _checkPermission() async {
-    final status = await Geolocator.checkPermission();
-    setState(() => _permGranted = status == LocationPermission.whileInUse || status == LocationPermission.always);
+  @override
+  void dispose() {
+    _map.dispose();
+    super.dispose();
   }
 
-  Future<void> _getCurrentLocation() async {
-    if (!_permGranted) {
-      final status = await Geolocator.requestPermission();
-      if (status != LocationPermission.whileInUse && status != LocationPermission.always) {
-        if (mounted) showMessage(context, 'Permission de localisation refusée', error: true);
+  Future<void> _locate({bool silent = false}) async {
+    if (_locating) return;
+    setState(() => _locating = true);
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        if (!silent && mounted) showMessage(context, 'Activez la localisation (GPS) de votre téléphone', error: true);
         return;
       }
-    }
-    setState(() => _loading = true);
-    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.deniedForever) {
+        if (!silent && mounted) {
+          showMessage(context, 'Localisation refusée : autorisez-la dans les réglages, ou placez l\'épingle à la main',
+              error: true);
+        }
+        return;
+      }
+      if (permission == LocationPermission.denied) return;
+
       final pos = await Geolocator.getCurrentPosition(
-        timeLimit: const Duration(seconds: 10),
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
       );
       if (!mounted) return;
       setState(() {
-        _lat = pos.latitude;
-        _lng = pos.longitude;
+        _center = LatLng(pos.latitude, pos.longitude);
         _accuracy = pos.accuracy;
-        _error = null;
-        _updateMarker();
       });
-      // FIX: Check if map controller is initialized before animating
-      if (mounted && _mapController != null) {
-        _mapController!.animateCamera(CameraUpdate.newLatLng(LatLng(_lat!, _lng!)));
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _error = 'Impossible de récupérer votre position : $e');
+      _map.move(_center, 17);
+    } catch (_) {
+      if (!silent && mounted) {
+        showMessage(context, 'Position introuvable pour le moment. Placez l\'épingle à la main.', error: true);
       }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _locating = false);
     }
   }
 
-  void _updateMarker() {
-    _markers.clear();
-    if (_lat != null && _lng != null) {
-      _markers.add(
-        Marker(
-          markerId: const MarkerId('location'),
-          position: LatLng(_lat!, _lng!),
-          infoWindow: const InfoWindow(title: 'Votre localisation'),
-        ),
-      );
-    }
-  }
-
-  void _onMapTap(LatLng pos) {
+  void _onMove(MapCamera camera, bool hasGesture) {
+    if (!hasGesture) return;
     setState(() {
-      _lat = pos.latitude;
-      _lng = pos.longitude;
-      _updateMarker();
+      _center = camera.center;
+      _accuracy = null; // Placée à la main : la précision GPS ne s'applique plus.
+      _moving = true;
     });
-  }
-
-  void _submit() {
-    if (_lat == null || _lng == null) return;
-    Navigator.pop(context, LocationData(lat: _lat!, lng: _lng!, accuracy: _accuracy));
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_lat == null || _lng == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sélectionner ma localisation'),
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('Ma position de livraison')),
       body: Stack(
         children: [
-          GoogleMap(
-            initialCameraPosition: CameraPosition(target: LatLng(_lat!, _lng!), zoom: 15),
-            // FIX: Safely store map controller and check if mounted
-            onMapCreated: (c) {
-              if (mounted) {
-                _mapController = c;
-              }
-            },
-            onTap: _onMapTap,
-            markers: _markers,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-          ),
-          if (_error != null)
-            Positioned(
-              top: 12,
-              left: 12,
-              right: 12,
-              child: Material(
-                color: Colors.red.shade100,
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
-                ),
+          Listener(
+            onPointerUp: (_) => setState(() => _moving = false),
+            child: FlutterMap(
+              mapController: _map,
+              options: MapOptions(
+                initialCenter: _center,
+                initialZoom: 16,
+                minZoom: 5,
+                maxZoom: 19,
+                onPositionChanged: _onMove,
               ),
-            ),
-          Positioned(
-            top: 16,
-            right: 16,
-            child: Column(
               children: [
-                FloatingActionButton.small(
-                  onPressed: _loading ? null : _getCurrentLocation,
-                  backgroundColor: AppColors.red,
-                  child: _loading
-                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)))
-                      : const Icon(Icons.my_location_rounded, color: Colors.white),
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.ivrivrii.chicken',
+                ),
+                const RichAttributionWidget(
+                  alignment: AttributionAlignment.bottomLeft,
+                  attributions: [TextSourceAttribution('© OpenStreetMap')],
                 ),
               ],
             ),
           ),
+          // Épingle fixe au centre ; la pointe désigne exactement la position choisie.
+          IgnorePointer(
+            child: Center(
+              child: AnimatedSlide(
+                duration: const Duration(milliseconds: 150),
+                offset: Offset(0, _moving ? -0.62 : -0.5),
+                child: const Icon(Icons.location_on_rounded, size: 52, color: AppColors.red),
+              ),
+            ),
+          ),
           Positioned(
-            bottom: 0,
+            top: 16,
+            left: 16,
+            right: 16,
+            child: Material(
+              elevation: 3,
+              borderRadius: BorderRadius.circular(14),
+              color: scheme.surface,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.touch_app_rounded, color: AppColors.red),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Faites glisser la carte pour placer l\'épingle sur votre porte.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            right: 16,
+            bottom: 190,
+            child: FloatingActionButton(
+              heroTag: 'locate',
+              onPressed: _locating ? null : _locate,
+              backgroundColor: scheme.surface,
+              foregroundColor: AppColors.red,
+              tooltip: 'Ma position',
+              child: _locating
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
+                  : const Icon(Icons.my_location_rounded),
+            ),
+          ),
+          Positioned(
             left: 0,
             right: 0,
-            child: Container(
-              color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            bottom: 0,
+            child: Material(
+              elevation: 12,
+              color: scheme.surface,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
               child: SafeArea(
                 top: false,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Position sélectionnée', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                    const SizedBox(height: 8),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.place_rounded, color: AppColors.red),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Icon(Icons.location_on_rounded, color: AppColors.red, size: 18),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text('${_lat!.toStringAsFixed(4)}, ${_lng!.toStringAsFixed(4)}',
-                                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                                const Text('Position choisie', style: TextStyle(fontWeight: FontWeight.w700)),
+                                Text(
+                                  '${_center.latitude.toStringAsFixed(5)}, ${_center.longitude.toStringAsFixed(5)}'
+                                  '${_accuracy != null ? '  •  ±${_accuracy!.round()} m' : ''}',
+                                  style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
                                 ),
                               ],
                             ),
-                            if (_accuracy != null) ...[
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  const Icon(Icons.info_outline_rounded, color: AppColors.muted, size: 16),
-                                  const SizedBox(width: 8),
-                                  Text('Précision : ±${_accuracy!.toStringAsFixed(0)} m',
-                                      style: const TextStyle(color: AppColors.muted, fontSize: 12)),
-                                ],
-                              ),
-                            ],
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton(onPressed: _submit, child: const Text('Confirmer cette localisation')),
-                  ],
+                      const SizedBox(height: 14),
+                      FilledButton.icon(
+                        onPressed: () => Navigator.pop(
+                          context,
+                          LocationData(lat: _center.latitude, lng: _center.longitude, accuracy: _accuracy),
+                        ),
+                        icon: const Icon(Icons.check_rounded),
+                        label: const Text('Confirmer cette position'),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -221,12 +232,5 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> {
         ],
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    // FIX: Only dispose if controller is initialized
-    _mapController?.dispose();
-    super.dispose();
   }
 }

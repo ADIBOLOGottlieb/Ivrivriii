@@ -155,7 +155,11 @@ class CartScreen extends StatelessWidget {
                         if (context.mounted) {
                           await Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: order.id, initial: order)),
+                            MaterialPageRoute(builder: (_) => OrderDetailScreen(
+                              orderId: order.id,
+                              initial: order,
+                              openPayment: isMobileMoney(order.paymentMethod),
+                            )),
                           );
                         }
                       },

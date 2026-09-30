@@ -29,12 +29,24 @@ String timeAgo(DateTime d) {
 /// Moyens de paiement proposés au Togo.
 const paymentMethods = <String, String>{
   'cash': 'Espèces à la livraison',
-  'tmoney': 'T-Money (Togocom)',
   'flooz': 'Flooz (Moov Africa)',
+  'mixx': 'Mixx by Yas',
 };
+
+/// Moyens payés en ligne via KADEV PAY (frais de paiement à la charge du client).
+bool isMobileMoney(String method) => method == 'flooz' || method == 'mixx';
+
+/// Frais de paiement mobile money, arrondis à l'unité supérieure.
+/// Même formule que le serveur (backend/src/payments.js) : ceil(montant × % / 100).
+int paymentFeeFor(int amount, String method, num percent) =>
+    isMobileMoney(method) ? (amount * percent / 100).ceil() : 0;
+
+/// « 2 » plutôt que « 2.0 », « 2,5 » pour les pourcentages décimaux.
+String formatPercent(num p) => p == p.roundToDouble() ? '${p.round()}' : p.toString().replaceAll('.', ',');
 
 // Libellés des anciens moyens de paiement, pour l'historique des commandes.
 const _legacyPaymentLabels = <String, String>{
+  'tmoney': 'T-Money',
   'orange_money': 'Orange Money',
   'mtn_momo': 'MTN Mobile Money',
   'moov_money': 'Moov Money',

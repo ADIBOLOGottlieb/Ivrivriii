@@ -21,7 +21,11 @@ class ClientShellState extends State<ClientShell> {
   static const menuTab = 0, cartTab = 1, ordersTab = 2, profileTab = 3;
   int _index = 0;
 
-  void goTo(int index) => setState(() => _index = index);
+  void goTo(int index) {
+    // Ferme le clavier (ex : recherche) pour qu'il ne masque pas la barre d'onglets.
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (index != _index) setState(() => _index = index);
+  }
 
   @override
   Widget build(BuildContext context) {

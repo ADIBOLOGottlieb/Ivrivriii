@@ -71,12 +71,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   int _getPaymentFee(CartProvider cart) {
     final settings = _settings;
     if (settings == null || _payment == 'cash') return 0;
-    final total = cart.subtotal + _getDeliveryFee();
-    // FIX: Use proper ceiling formula for payment fee calculation
-    // Calculate: fee = ceil(total * paymentFeePercent / 100)
-    // Using formula: ceil(a/b) = (a + b - 1) / b in integer division
-    final feeAmount = total * settings.paymentFeePercent;
-    return (feeAmount + 99) ~/ 100; // Properly rounds up to nearest cent
+    return paymentFeeFor(cart.subtotal + _getDeliveryFee(), _payment, settings.paymentFeePercent);
   }
 
   Future<void> _selectLocation() async {
@@ -131,11 +126,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           title: const Text('Commande envoyée !'),
           content: Text(
             'Votre commande n°${order.id} a bien été reçue. '
-            'Vous pouvez suivre sa préparation en temps réel.',
+            (isMobileMoney(order.paymentMethod)
+                ? 'Réglez-la maintenant par ${paymentLabel(order.paymentMethod)} pour que le restaurant la lance.'
+                : 'Vous pouvez suivre sa préparation en temps réel.'),
             textAlign: TextAlign.center,
           ),
           actions: [
-            FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('Suivre ma commande')),
+            FilledButton(onPressed: () => Navigator.pop(ctx), child: Text(isMobileMoney(order.paymentMethod) ? 'Payer maintenant' : 'Suivre ma commande')),
           ],
         ),
       );
@@ -262,11 +259,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
             ),
             if (_payment != 'cash')
-              const Padding(
-                padding: EdgeInsets.only(top: 8, left: 4),
+              Padding(
+                padding: const EdgeInsets.only(top: 8, left: 4),
                 child: Text(
-                  'Le restaurant vous contactera pour confirmer le paiement mobile.',
-                  style: TextStyle(color: AppColors.muted, fontSize: 12.5),
+                  'Après validation, vous serez redirigé vers la page de paiement sécurisée (KADEV PAY). '
+                  "Des frais de ${formatPercent(_settings?.paymentFeePercent ?? 2)} % s'ajoutent au total.",
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12.5),
                 ),
               ),
             const SizedBox(height: 20),

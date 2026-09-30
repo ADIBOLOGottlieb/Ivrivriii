@@ -20,7 +20,11 @@ class AdminShellState extends State<AdminShell> {
   int _index = 0;
   int _pendingCount = 0;
 
-  void goTo(int index) => setState(() => _index = index);
+  void goTo(int index) {
+    // Ferme le clavier (ex : recherche) pour qu'il ne masque pas la barre d'onglets.
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (index != _index) setState(() => _index = index);
+  }
 
   void setPendingCount(int n) {
     if (n != _pendingCount) setState(() => _pendingCount = n);

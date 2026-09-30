@@ -96,60 +96,6 @@ abstract class RouteAnimations {
       transitionDuration: const Duration(milliseconds: 350),
     );
   }
-
-  /// Blur animation (iOS-like modal presentation)
-  static Route<T> blurRoute<T>(Widget page) {
-    return PageRouteBuilder<T>(
-      pageBuilder: (_, __, ___) => page,
-      transitionsBuilder: (_, animation, __, child) {
-        return BackdropFilter(
-          filter: _BlurFilter(animation),
-          child: FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: animation.drive(
-                Tween(begin: const Offset(0, 0.05), end: Offset.zero)
-                    .chain(CurveTween(curve: Curves.easeOutCubic)),
-              ),
-              child: child,
-            ),
-          ),
-        );
-      },
-      transitionDuration: const Duration(milliseconds: 350),
-      barrierColor: Colors.black.withValues(alpha: 0.3),
-      barrierDismissible: true,
-    );
-  }
-}
-
-/// Custom blur filter for animations
-class _BlurFilter extends ImageFilter {
-  final Animation<double> animation;
-
-  _BlurFilter(this.animation);
-
-  @override
-  Future<void> toImage(ui.Image image, {required ui.Color color}) async {
-    // Not used for custom painting
-  }
-
-  @override
-  String get toString => 'BlurFilter()';
-}
-
-import 'dart:ui' as ui;
-
-// Re-declare the filter properly
-class BlurFilter extends ImageFilter {
-  final double blur;
-
-  BlurFilter({required this.blur});
-
-  @override
-  Future<void> toImage(ui.Image image, {required ui.Color color}) async {
-    // Implementation for ImageFilter
-  }
 }
 
 /// Widget that applies shared axis transition (Material Design pattern)

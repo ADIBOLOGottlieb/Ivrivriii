@@ -210,32 +210,55 @@ class AnimatedCount extends StatelessWidget {
 
 /// Comme IndexedStack (les onglets gardent leur état), avec un fondu + léger zoom
 /// lors du changement d'onglet.
-class FadeIndexedStack extends StatelessWidget {
+///
+/// Repose sur [IndexedStack] : seul l'onglet actif est peint et reçoit les appuis.
+/// (L'ancienne version empilait tous les onglets en jouant sur l'opacité ; le fondu de
+/// l'onglet quitté était gelé par TickerMode, il restait affiché alors que les appuis
+/// partaient vers l'onglet actif, invisible dessous.)
+class FadeIndexedStack extends StatefulWidget {
   final int index;
   final List<Widget> children;
 
   const FadeIndexedStack({super.key, required this.index, required this.children});
 
   @override
+  State<FadeIndexedStack> createState() => _FadeIndexedStackState();
+}
+
+class _FadeIndexedStackState extends State<FadeIndexedStack> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 220), value: 1);
+  late final Animation<double> _fade = CurvedAnimation(parent: _c, curve: Curves.easeOut);
+  late final Animation<double> _scale = Tween(begin: 0.985, end: 1.0).animate(_fade);
+
+  @override
+  void didUpdateWidget(FadeIndexedStack old) {
+    super.didUpdateWidget(old);
+    if (old.index != widget.index) _c.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
+    return IndexedStack(
+      index: widget.index,
+      sizing: StackFit.expand,
       children: [
-        for (var i = 0; i < children.length; i++)
-          IgnorePointer(
-            ignoring: i != index,
-            child: TickerMode(
-              enabled: i == index,
-              child: AnimatedOpacity(
-                opacity: i == index ? 1 : 0,
-                duration: const Duration(milliseconds: 260),
-                curve: Curves.easeOut,
-                child: AnimatedScale(
-                  scale: i == index ? 1 : 0.985,
-                  duration: const Duration(milliseconds: 260),
-                  curve: Curves.easeOut,
-                  child: ExcludeSemantics(excluding: i != index, child: children[i]),
-                ),
+        for (var i = 0; i < widget.children.length; i++)
+          // Même structure pour tous les onglets, sinon Flutter recréerait l'onglet
+          // (et perdrait son état : recherche, défilement...) à chaque changement.
+          TickerMode(
+            enabled: i == widget.index,
+            child: FadeTransition(
+              opacity: i == widget.index ? _fade : const AlwaysStoppedAnimation(1.0),
+              child: ScaleTransition(
+                scale: i == widget.index ? _scale : const AlwaysStoppedAnimation(1.0),
+                child: widget.children[i],
               ),
             ),
           ),

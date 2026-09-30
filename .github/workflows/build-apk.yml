@@ -1,9 +1,13 @@
 # Compile l'APK Android sur les serveurs de GitHub (utile si Windows bloque Flutter).
-# GitHub → onglet « Actions » → « Build APK » → « Run workflow », puis téléchargez l'APK
-# dans la section « Artifacts » du résultat.
+# Se lance tout seul à chaque push sur main qui touche l'app mobile, ou à la main :
+# GitHub → onglet « Actions » → « Build APK » → « Run workflow ».
+# L'APK se télécharge dans la section « Artifacts » du résultat.
 name: Build APK
 
 on:
+  push:
+    branches: [main]
+    paths: ["mobile/**", ".github/workflows/build-apk.yml"]
   workflow_dispatch:
     inputs:
       api_url:
@@ -28,8 +32,19 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
+      # Liste toutes les erreurs de compilation d'un coup (les avertissements ne bloquent pas).
+      # Chaque erreur devient une annotation visible sur la page du build.
+      - name: flutter analyze
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings --format=machine 2> analyze.txt
+          code=$?
+          grep '^ERROR' analyze.txt | while IFS='|' read -r sev type rule file line col len msg; do
+            echo "::error file=${file#$GITHUB_WORKSPACE/},line=$line,col=$col::$msg"
+          done
+          exit $code
       - run: flutter test
-      - run: flutter build apk --release --dart-define=API_URL=${{ github.event.inputs.api_url }}
+      - run: flutter build apk --release --dart-define=API_URL=${{ github.event.inputs.api_url || 'http://192.168.1.78:4000' }}
       - uses: actions/upload-artifact@v4
         with:
           name: ivrivrii-chicken-apk

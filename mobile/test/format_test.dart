@@ -10,6 +10,23 @@ void main() {
     expect(formatPrice(1250000), '1 250 000 FCFA');
   });
 
+  test('frais de paiement : identiques au serveur, arrondis au supérieur', () {
+    expect(paymentFeeFor(4000, 'flooz', 2), 80);
+    expect(paymentFeeFor(4050, 'mixx', 2), 81); // 81 pile
+    expect(paymentFeeFor(4010, 'flooz', 2), 81); // 80,2 -> 81
+    expect(paymentFeeFor(4000, 'flooz', 2.5), 100);
+    expect(paymentFeeFor(4000, 'cash', 2), 0);
+    expect(formatPercent(2.0), '2');
+    expect(formatPercent(2.5), '2,5');
+  });
+
+  test('moyens de paiement alignés sur le serveur (flooz, mixx)', () {
+    expect(paymentMethods.keys, ['cash', 'flooz', 'mixx']);
+    expect(isMobileMoney('mixx'), isTrue);
+    expect(isMobileMoney('cash'), isFalse);
+    expect(paymentLabel('tmoney'), 'T-Money'); // anciennes commandes
+  });
+
   test('nextStatus suit le mode de retrait', () {
     expect(nextStatus('ready', true), 'delivering');
     expect(nextStatus('ready', false), 'delivered');

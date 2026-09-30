@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../models.dart';
 import '../../services/api.dart';
+import '../../utils/pagination.dart';
+import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import '../shared/order_card.dart';
@@ -21,15 +23,26 @@ class OrdersScreen extends StatefulWidget {
 class _OrdersScreenState extends State<OrdersScreen> {
   List<Order>? _orders;
   Object? _error;
-  Timer? _timer;
+  late SmartPoller _poller;
+  late RequestDeduplicator<List<Order>> _deduplicator;
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
+
+    // Initialize request deduplicator
+    _deduplicator = RequestDeduplicator();
+
+    // Initialize smart poller for active orders
+    _poller = SmartPoller(
+      onPoll: () => _load(silent: true),
+      getInterval: (_) => const Duration(seconds: 20),
+    );
+
     _load();
-    _timer = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (widget.active && (_orders?.any((o) => !o.isFinished) ?? false)) _load();
-    });
+    _poller.startPolling('pending');
+    _scrollController.addListener(_handleScroll);
   }
 
   @override
@@ -40,20 +53,32 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _poller.stop();
+    _scrollController.removeListener(_handleScroll);
+    _scrollController.dispose();
+    _deduplicator.clear();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  /// Handle scroll events for potential pagination.
+  void _handleScroll() {
+    if (_scrollController.position.pixels > _scrollController.position.maxScrollExtent - 500) {
+      // Could implement pagination here for users with many orders
+    }
+  }
+
+  /// Load all orders with deduplication.
+  /// [silent] = true skips error UI (for background refresh)
+  Future<void> _load({bool silent = false}) async {
     try {
-      final orders = await Api.instance.myOrders();
+      final orders = await _deduplicator.dedupe('myOrders', () => Api.instance.myOrders());
       if (!mounted) return;
       setState(() {
         _orders = orders;
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted && !silent) setState(() => _error = e);
     }
   }
 
@@ -69,51 +94,72 @@ class _OrdersScreenState extends State<OrdersScreen> {
           ? ErrorRetry(error: _error!, onRetry: _load)
           : const Center(child: CircularProgressIndicator());
     } else if (orders.isEmpty) {
-      body = ListView(children: const [
-        SizedBox(height: 80),
-        EmptyState(
-          emoji: '🧾',
-          title: 'Aucune commande',
-          message: 'Vos commandes apparaîtront ici.',
-        ),
-      ]);
-    } else {
-      body = ListView(
-        padding: const EdgeInsets.only(bottom: 24),
+      body = const ListView(
         children: [
-          if (active.isNotEmpty) ...[
-            const SectionTitle('En cours'),
-            for (final (i, o) in active.indexed) _card(o, i),
-          ],
-          if (past.isNotEmpty) ...[
-            const SectionTitle('Historique'),
-            for (final (i, o) in past.indexed) _card(o, active.length + i),
-          ],
+          SizedBox(height: 80),
+          EmptyState(
+            emoji: '🧾',
+            title: 'Aucune commande',
+            message: 'Vos commandes apparaîtront ici.',
+          ),
         ],
+      );
+    } else {
+      // Use ListView.builder for efficient rendering of large lists
+      body = ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.only(bottom: 24),
+        itemCount: (active.isNotEmpty ? 1 : 0) + active.length + (past.isNotEmpty ? 1 : 0) + past.length,
+        itemBuilder: (context, index) {
+          int pos = 0;
+
+          // "En cours" section header
+          if (active.isNotEmpty) {
+            if (index == pos) return const SectionTitle('En cours');
+            pos++;
+          }
+
+          // Active orders
+          if (index < pos + active.length) {
+            return _card(active[index - pos], index - pos);
+          }
+          pos += active.length;
+
+          // "Historique" section header
+          if (past.isNotEmpty) {
+            if (index == pos) return const SectionTitle('Historique');
+            pos++;
+          }
+
+          // Past orders
+          return _card(past[index - pos], active.length + (index - pos));
+        },
       );
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Mes commandes')),
-      body: RefreshIndicator(onRefresh: _load, child: body),
+      appBar: const AppBar(title: Text('Mes commandes')),
+      body: RefreshIndicator(onRefresh: () => _load(silent: false), child: body),
     );
   }
 
+  /// Build order card with fade-in animation and proper key tracking.
+  /// Using ValueKey prevents rebuild jank when list order changes.
   Widget _card(Order o, int index) => FadeSlideIn(
-        key: ValueKey('order-${o.id}'),
-        delay: FadeSlideIn.stagger(index),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-          child: OrderCard(
-            order: o,
-            onTap: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: o.id, initial: o)),
-              );
-              _load();
-            },
-          ),
-        ),
-      );
+    key: ValueKey('order-${o.id}'), // Stable key for list tracking
+    delay: FadeSlideIn.stagger(index),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+      child: OrderCard(
+        order: o,
+        onTap: () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: o.id, initial: o)),
+          );
+          _load(); // Refresh after returning from detail screen
+        },
+      ),
+    ),
+  );
 }

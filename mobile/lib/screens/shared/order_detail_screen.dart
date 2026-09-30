@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../config.dart';
 import '../../models.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
@@ -18,7 +19,16 @@ class OrderDetailScreen extends StatefulWidget {
   final Order? initial;
   final bool admin;
 
-  const OrderDetailScreen({super.key, required this.orderId, this.initial, this.admin = false});
+  /// Ouvre directement la page de paiement (juste après une commande Flooz / Mixx).
+  final bool openPayment;
+
+  const OrderDetailScreen({
+    super.key,
+    required this.orderId,
+    this.initial,
+    this.admin = false,
+    this.openPayment = false,
+  });
 
   @override
   State<OrderDetailScreen> createState() => _OrderDetailScreenState();
@@ -28,35 +38,48 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Order? _order;
   Object? _error;
   bool _busy = false;
-  Timer? _timer;
+  late SmartPoller _poller;
+  // Le client revient du navigateur après avoir payé : on rafraîchit aussitôt.
+  late final AppLifecycleListener _lifecycle;
 
   @override
   void initState() {
     super.initState();
     _order = widget.initial;
-    _load();
-    // FIX: Only create timer if order is not already finished
-    // This prevents unnecessary polling for completed orders
-    if (_order == null || !_order!.isFinished) {
-      _startPolling();
-    }
-  }
 
-  void _startPolling() {
-    _timer = Timer.periodic(const Duration(seconds: 15), (_) {
-      // FIX: Check if order is finished and cancel timer if so
-      if (_order != null && _order!.isFinished) {
-        _timer?.cancel();
-        _timer = null;
-      } else if (mounted) {
-        _load();
-      }
-    });
+    // Initialize smart poller with adaptive polling intervals based on order status.
+    // Priorities: pending/confirmed (10s) > preparing/ready/delivering (5s) > finished (stop)
+    _poller = SmartPoller(
+      onPoll: _load,
+      getInterval: (status) {
+        // Urgent: order in transit or being prepared
+        if (['preparing', 'ready', 'delivering'].contains(status)) {
+          return const Duration(seconds: 5); // High priority - poll frequently
+        }
+        // Active: order just placed or confirmed
+        if (['pending', 'confirmed'].contains(status)) {
+          return const Duration(seconds: 10); // Normal priority
+        }
+        // Stable: order finished - stop polling entirely
+        return const Duration(hours: 1); // Effectively disabled
+      },
+    );
+
+    _lifecycle = AppLifecycleListener(onResume: _load);
+    _load();
+    if (widget.openPayment && !widget.admin) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _pay());
+    }
+    // Start polling only if order not finished
+    if (_order == null || !_order!.isFinished) {
+      _poller.startPolling(_order?.status ?? 'pending');
+    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _poller.stop(); // Clean up smart poller
+    _lifecycle.dispose();
     super.dispose();
   }
 
@@ -67,11 +90,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       setState(() {
         _order = o;
         _error = null;
-        // FIX: Check if order just finished and stop polling if so
-        if (o.isFinished) {
-          _timer?.cancel();
-          _timer = null;
-        }
+        // Update poller with new status for adaptive interval adjustment
+        _poller.updateStatus(o.status);
       });
     } catch (e) {
       if (mounted) setState(() => _error = e);
@@ -85,6 +105,26 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       if (!mounted) return;
       setState(() => _order = o);
       showMessage(context, success);
+    } catch (e) {
+      if (mounted) showMessage(context, e, error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Ouvre la page de paiement sécurisée KADEV PAY dans le navigateur.
+  Future<void> _pay() async {
+    var o = _order;
+    if (o == null || _busy) return;
+    setState(() => _busy = true);
+    try {
+      if (o.payUrl == null) {
+        o = await Api.instance.renewPayment(o.id);
+        if (!mounted) return;
+        setState(() => _order = o);
+      }
+      final ok = await launchUrl(Uri.parse('$apiBaseUrl${o.payUrl}'), mode: LaunchMode.externalApplication);
+      if (!ok && mounted) showMessage(context, "Impossible d'ouvrir la page de paiement", error: true);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
     } finally {
@@ -124,6 +164,13 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 padding: const EdgeInsets.all(20),
                 children: [
                   FadeSlideIn(child: _StatusHeader(order: o)),
+                  if (isMobileMoney(o.paymentMethod) && o.status != 'cancelled') ...[
+                    const SizedBox(height: 16),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 40),
+                      child: _PaymentCard(order: o, admin: widget.admin, busy: _busy, onPay: _pay),
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   if (o.status != 'cancelled')
                     FadeSlideIn(delay: const Duration(milliseconds: 80), child: _Timeline(order: o)),
@@ -170,7 +217,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     final buttons = <Widget>[];
     if (widget.admin) {
       final next = nextStatus(o.status, o.isDelivery);
-      if (next != null && o.status != 'cancelled') {
+      final awaitingPayment = isMobileMoney(o.paymentMethod) && !o.isPaid;
+      if (next != null && o.status != 'cancelled' && !awaitingPayment) {
         buttons.add(FilledButton.icon(
           onPressed: _busy
               ? null
@@ -187,7 +235,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           child: const Text('Annuler la commande'),
         ));
       }
-    } else if (o.status == 'pending') {
+    } else if (o.status == 'pending' && !o.isPaid) {
       buttons.add(OutlinedButton(
         onPressed: _busy ? null : _cancel,
         style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
@@ -196,7 +244,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     }
     if (buttons.isEmpty) return null;
     return Container(
-      color: Colors.white,
+      color: Theme.of(context).colorScheme.surface,
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
       child: SafeArea(
         top: false,
@@ -379,11 +427,32 @@ class _CustomerCard extends StatelessWidget {
           child: Icon(Icons.person_rounded, color: AppColors.ink),
         ),
         title: Text(order.customerName, style: const TextStyle(fontWeight: FontWeight.w800)),
-        subtitle: Text(order.phone),
-        trailing: IconButton.filled(
-          style: IconButton.styleFrom(backgroundColor: AppColors.green),
-          icon: const Icon(Icons.call_rounded),
-          onPressed: () => launchUrl(Uri(scheme: 'tel', path: order.phone.replaceAll(' ', ''))),
+        subtitle: Text(order.hasLocation ? '${order.phone}\nPosition GPS fournie' : order.phone),
+        isThreeLine: order.hasLocation,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (order.hasLocation) ...[
+              IconButton.filled(
+                tooltip: 'Itinéraire',
+                style: IconButton.styleFrom(backgroundColor: AppColors.red),
+                icon: const Icon(Icons.directions_rounded),
+                onPressed: () => launchUrl(
+                  Uri.parse(
+                    'https://www.google.com/maps/dir/?api=1&destination=${order.deliveryLat},${order.deliveryLng}',
+                  ),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+            IconButton.filled(
+              tooltip: 'Appeler',
+              style: IconButton.styleFrom(backgroundColor: AppColors.green),
+              icon: const Icon(Icons.call_rounded),
+              onPressed: () => launchUrl(Uri(scheme: 'tel', path: order.phone.replaceAll(' ', ''))),
+            ),
+          ],
         ),
       ),
     );
@@ -427,6 +496,7 @@ class _ItemsCard extends StatelessWidget {
             const Divider(height: 20),
             _row('Sous-total', order.subtotal),
             if (order.isDelivery) _row('Livraison', order.deliveryFee),
+            if (order.paymentFee > 0) _row('Frais de paiement', order.paymentFee),
             const SizedBox(height: 4),
             Row(
               children: [
@@ -449,4 +519,59 @@ class _ItemsCard extends StatelessWidget {
           Text(formatPrice(amount)),
         ]),
       );
+}
+
+/// État du paiement mobile money (Flooz / Mixx via KADEV PAY).
+class _PaymentCard extends StatelessWidget {
+  final Order order;
+  final bool admin;
+  final bool busy;
+  final VoidCallback onPay;
+  const _PaymentCard({required this.order, required this.admin, required this.busy, required this.onPay});
+
+  @override
+  Widget build(BuildContext context) {
+    final paid = order.isPaid;
+    final failed = order.paymentStatus == 'failed';
+    final color = paid ? AppColors.green : (failed ? AppColors.darkRed : const Color(0xFFE08A00));
+    final title = paid ? 'Paiement reçu' : (failed ? 'Paiement échoué' : 'En attente de paiement');
+    final String message;
+    if (paid) {
+      message = 'Réf. ${order.paymentReference ?? '-'}';
+    } else if (admin) {
+      message = 'La commande pourra être lancée dès que le client aura payé.';
+    } else {
+      message = 'Payez ${formatPrice(order.total)} par ${paymentLabel(order.paymentMethod)} '
+          'pour que le restaurant lance votre commande.';
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(paid ? Icons.verified_rounded : Icons.account_balance_wallet_rounded, color: color),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(title, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: color)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(message, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.35)),
+            if (!paid && !admin) ...[
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: busy ? null : onPay,
+                icon: const Icon(Icons.lock_rounded),
+                label: Text(failed ? 'Réessayer le paiement' : 'Payer maintenant'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }

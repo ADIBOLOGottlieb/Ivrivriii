@@ -39,7 +39,7 @@ class ApiException implements Exception {
 /// Circuit breaker pattern to prevent cascading failures
 class CircuitBreaker {
   static const int failureThreshold = 5;
-  static const Duration resetTimeout = Duration(minutes: 1);
+  static const Duration resetTimeout = Duration(seconds: 15);
 
   int _failureCount = 0;
   DateTime? _lastFailureTime;
@@ -194,7 +194,10 @@ class Api {
   }
 
   /// Send HTTP request with retry logic and error handling
-  Future<dynamic> _send(Future<http.Response> Function() request) async {
+  /// [retry] : seules les lectures (GET) sont rejouées. Rejouer un POST après un délai
+  /// dépassé pourrait créer une commande en double si le serveur l'avait déjà reçue.
+  Future<dynamic> _send(Future<http.Response> Function() request, {bool retry = true}) async {
+    final attempts = retry ? _maxRetries : 1;
     // Check circuit breaker
     if (_circuitBreaker.isOpen) {
       if (!_circuitBreaker.shouldReset()) {
@@ -212,7 +215,7 @@ class Api {
     int? lastStatusCode;
 
     // Retry loop
-    for (int attempt = 0; attempt < _maxRetries; attempt++) {
+    for (int attempt = 0; attempt < attempts; attempt++) {
       try {
         _log('Request attempt ${attempt + 1}/$_maxRetries');
 
@@ -241,7 +244,6 @@ class Api {
         if (res.statusCode == 401 && token != null) {
           _log('Received 401 - triggering logout');
           onUnauthorized?.call();
-          _circuitBreaker.recordFailure();
           final msg = body is Map && body['error'] is String
               ? body['error'] as String
               : 'Session expirée. Veuillez vous reconnecter.';
@@ -258,15 +260,16 @@ class Api {
           _isRetryable(null, res.statusCode),
         );
 
-        if (!_isRetryable(null, res.statusCode)) {
-          _circuitBreaker.recordFailure();
+        if (!_isRetryable(null, res.statusCode) || attempt == attempts - 1) {
+          // Erreur de requête (4xx) : ce n'est pas une panne du serveur.
+          if (res.statusCode >= 500) _circuitBreaker.recordFailure();
           throw lastError;
         }
 
         // This is a retryable error - log and retry
         _log('Retryable error (${res.statusCode}) - will retry');
 
-        if (attempt < _maxRetries - 1) {
+        if (attempt < attempts - 1) {
           final backoff = _calculateBackoff(attempt);
           _log('Waiting ${backoff.inMilliseconds}ms before retry...');
           await Future.delayed(backoff);
@@ -280,7 +283,7 @@ class Api {
           e,
         );
 
-        if (attempt < _maxRetries - 1) {
+        if (attempt < attempts - 1) {
           final backoff = _calculateBackoff(attempt);
           _log('Waiting ${backoff.inMilliseconds}ms before retry...');
           await Future.delayed(backoff);
@@ -297,7 +300,7 @@ class Api {
           e,
         );
 
-        if (attempt < _maxRetries - 1) {
+        if (attempt < attempts - 1) {
           final backoff = _calculateBackoff(attempt);
           _log('Waiting ${backoff.inMilliseconds}ms before retry...');
           await Future.delayed(backoff);
@@ -314,7 +317,7 @@ class Api {
           e,
         );
 
-        if (attempt < _maxRetries - 1) {
+        if (attempt < attempts - 1) {
           final backoff = _calculateBackoff(attempt);
           _log('Waiting ${backoff.inMilliseconds}ms before retry...');
           await Future.delayed(backoff);
@@ -342,24 +345,24 @@ class Api {
 
   /// POST request (not cached)
   Future<dynamic> post(String path, [Object? body]) =>
-      _send(() => http.post(_uri(path), headers: _headers, body: jsonEncode(body ?? {})));
+      _send(() => http.post(_uri(path), headers: _headers, body: jsonEncode(body ?? {})), retry: false);
 
   /// PUT request (invalidates cache)
   Future<dynamic> put(String path, Object body) async {
     _cache.remove(path);
-    return _send(() => http.put(_uri(path), headers: _headers, body: jsonEncode(body)));
+    return _send(() => http.put(_uri(path), headers: _headers, body: jsonEncode(body)), retry: false);
   }
 
   /// PATCH request (invalidates cache)
   Future<dynamic> patch(String path, Object body) async {
     _cache.remove(path);
-    return _send(() => http.patch(_uri(path), headers: _headers, body: jsonEncode(body)));
+    return _send(() => http.patch(_uri(path), headers: _headers, body: jsonEncode(body)), retry: false);
   }
 
   /// DELETE request (invalidates cache)
   Future<dynamic> delete(String path) async {
     _cache.remove(path);
-    return _send(() => http.delete(_uri(path), headers: _headers));
+    return _send(() => http.delete(_uri(path), headers: _headers), retry: false);
   }
 
   /// Cache a value for critical data
@@ -477,6 +480,12 @@ class Api {
     _log('Cancelling order $id');
     _cache.remove('/orders');
     return Order.fromJson(await post('/orders/$id/cancel'));
+  }
+
+  /// Génère un nouveau lien de paiement (après un échec ou un abandon).
+  Future<Order> renewPayment(int id) async {
+    _log('Renewing payment link for order $id');
+    return Order.fromJson(await post('/orders/$id/pay'));
   }
 
   // ---------- Admin ----------
