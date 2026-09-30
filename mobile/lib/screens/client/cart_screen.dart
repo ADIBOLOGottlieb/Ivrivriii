@@ -134,13 +134,15 @@ class CartScreen extends StatelessWidget {
                     const SizedBox(height: 14),
                     FilledButton(
                       onPressed: () async {
-                        final shell = ClientShell.of(context);
                         final order = await Navigator.push<Order>(
                           context,
                           MaterialPageRoute(builder: (_) => const CheckoutScreen()),
                         );
                         if (order == null || !context.mounted) return;
-                        shell?.goTo(ClientShellState.ordersTab);
+                        ClientShell.of(context)?.goTo(ClientShellState.ordersTab);
+                        // Délai pour que la transition du tab soit terminée
+                        await Future.delayed(const Duration(milliseconds: 300));
+                        if (!context.mounted) return;
                         Navigator.push(
                           context,
                           MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: order.id, initial: order)),

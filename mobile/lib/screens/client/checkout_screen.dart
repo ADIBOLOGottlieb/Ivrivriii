@@ -48,12 +48,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.dispose();
   }
 
-  int get _deliveryFee => _mode == 'delivery' ? (_settings?.deliveryFee ?? 0) : 0;
-  int get _paymentFee {
+  int _getDeliveryFee() => _mode == 'delivery' ? (_settings?.deliveryFee ?? 0) : 0;
+
+  int _getPaymentFee(CartProvider cart) {
     final settings = _settings;
     if (settings == null || _payment == 'cash') return 0;
-    final subtotal = context.read<CartProvider>().subtotal;
-    final total = subtotal + _deliveryFee;
+    final total = cart.subtotal + _getDeliveryFee();
     // Frais = ceil(total * 2% / 100)
     return ((total * settings.paymentFeePercent + 99) ~/ 100);
   }
@@ -129,6 +129,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartProvider>();
+    final deliveryFee = _getDeliveryFee();
+    final paymentFee = _getPaymentFee(cart);
     return Scaffold(
       appBar: AppBar(title: const Text('Finaliser la commande')),
       body: Form(
@@ -267,10 +269,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       ),
                     const Divider(height: 20),
                     _TotalRow('Sous-total', cart.subtotal),
-                    if (_mode == 'delivery') _TotalRow('Livraison', _deliveryFee),
-                    if (_payment != 'cash' && _paymentFee > 0) _TotalRow('Frais moyen paiement', _paymentFee),
+                    if (_mode == 'delivery') _TotalRow('Livraison', deliveryFee),
+                    if (_payment != 'cash' && paymentFee > 0) _TotalRow('Frais moyen paiement', paymentFee),
                     const SizedBox(height: 6),
-                    _TotalRow('Total', cart.subtotal + _deliveryFee + (_payment != 'cash' ? _paymentFee : 0), bold: true),
+                    _TotalRow('Total', cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0), bold: true),
                   ],
                 ),
               ),
@@ -288,7 +290,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             onPressed: _submitting || cart.isEmpty || (_mode == 'delivery' && _location == null) ? null : _submit,
             child: _submitting
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
-                : Text('Commander • ${formatPrice(cart.subtotal + _deliveryFee + (_payment != 'cash' ? _paymentFee : 0))}'),
+                : Text('Commander • ${formatPrice(cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0))}'),
           ),
         ),
       ),

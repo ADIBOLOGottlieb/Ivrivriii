@@ -130,6 +130,7 @@ class EditProfileScreen extends StatefulWidget {
 class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   late final _name = TextEditingController(text: widget.user.name);
+  late final _phone = TextEditingController(text: widget.user.phone);
   late final _email = TextEditingController(text: widget.user.email ?? '');
   late final _address = TextEditingController(text: widget.user.address ?? '');
   final _password = TextEditingController();
@@ -137,7 +138,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   @override
   void dispose() {
-    for (final c in [_name, _email, _address, _password]) {
+    for (final c in [_name, _phone, _email, _address, _password]) {
       c.dispose();
     }
     super.dispose();
@@ -179,7 +180,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             ),
             const SizedBox(height: 14),
             TextFormField(
-              initialValue: widget.user.phone,
+              controller: _phone,
               enabled: false,
               decoration: const InputDecoration(labelText: 'Téléphone', prefixIcon: Icon(Icons.phone_rounded)),
             ),
