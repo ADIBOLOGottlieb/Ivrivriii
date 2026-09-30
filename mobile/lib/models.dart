@@ -114,11 +114,18 @@ class Order {
   final String paymentMethod;
   final int subtotal;
   final int deliveryFee;
+  final int paymentFee;
   final int total;
+  final String paymentStatus; // 'unpaid', 'pending', 'paid', 'failed'
+  final String? paymentReference;
+  final double? deliveryLat;
+  final double? deliveryLng;
+  final double? deliveryAccuracy;
   final DateTime createdAt;
   final DateTime updatedAt;
   final String customerName;
   final List<OrderItem> items;
+  final String? payUrl;
 
   Order({
     required this.id,
@@ -131,16 +138,26 @@ class Order {
     required this.paymentMethod,
     required this.subtotal,
     required this.deliveryFee,
+    this.paymentFee = 0,
     required this.total,
+    this.paymentStatus = 'unpaid',
+    this.paymentReference,
+    this.deliveryLat,
+    this.deliveryLng,
+    this.deliveryAccuracy,
     required this.createdAt,
     required this.updatedAt,
     required this.customerName,
     required this.items,
+    this.payUrl,
   });
 
   bool get isDelivery => mode == 'delivery';
   bool get isFinished => status == 'delivered' || status == 'cancelled';
+  bool get needsPayment => paymentStatus == 'pending' || paymentStatus == 'failed';
+  bool get isPaid => paymentStatus == 'paid';
   int get itemCount => items.fold(0, (s, i) => s + i.quantity);
+  bool get hasLocation => deliveryLat != null && deliveryLng != null;
 
   factory Order.fromJson(Map<String, dynamic> j) => Order(
         id: _int(j['id']),
@@ -153,11 +170,18 @@ class Order {
         paymentMethod: j['payment_method'] ?? 'cash',
         subtotal: _int(j['subtotal']),
         deliveryFee: _int(j['delivery_fee']),
+        paymentFee: _int(j['payment_fee']),
         total: _int(j['total']),
+        paymentStatus: j['payment_status'] ?? 'unpaid',
+        paymentReference: j['payment_reference'],
+        deliveryLat: j['delivery_lat'] is num ? (j['delivery_lat'] as num).toDouble() : null,
+        deliveryLng: j['delivery_lng'] is num ? (j['delivery_lng'] as num).toDouble() : null,
+        deliveryAccuracy: j['delivery_accuracy'] is num ? (j['delivery_accuracy'] as num).toDouble() : null,
         createdAt: _parseDate(j['created_at']),
         updatedAt: _parseDate(j['updated_at']),
         customerName: j['customer_name'] ?? '',
         items: ((j['items'] as List?) ?? []).map((e) => OrderItem.fromJson(e)).toList(),
+        payUrl: j['pay_url'],
       );
 }
 
@@ -167,6 +191,8 @@ class AppSettings {
   final bool isOpen;
   final String restaurantPhone;
   final String restaurantAddress;
+  final int paymentFeePercent;
+  final String paymentMode; // 'test' ou 'live'
 
   AppSettings({
     required this.deliveryFee,
@@ -174,6 +200,8 @@ class AppSettings {
     required this.isOpen,
     required this.restaurantPhone,
     required this.restaurantAddress,
+    this.paymentFeePercent = 2,
+    this.paymentMode = 'test',
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -182,6 +210,8 @@ class AppSettings {
         isOpen: j['is_open'] == true,
         restaurantPhone: j['restaurant_phone'] ?? '',
         restaurantAddress: j['restaurant_address'] ?? '',
+        paymentFeePercent: _int(j['payment_fee_percent']),
+        paymentMode: j['payment_mode'] ?? 'test',
       );
 
   Map<String, dynamic> toJson() => {
@@ -190,6 +220,8 @@ class AppSettings {
         'is_open': isOpen,
         'restaurant_phone': restaurantPhone,
         'restaurant_address': restaurantAddress,
+        'payment_fee_percent': paymentFeePercent,
+        'payment_mode': paymentMode,
       };
 }
 

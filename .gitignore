@@ -19,3 +19,6 @@ mobile/android/key.properties
 *.iml
 .DS_Store
 Thumbs.db
+
+# Journaux
+backend/logs/

@@ -6,6 +6,7 @@ const db = new DatabaseSync(DB_PATH);
 
 db.exec(`
   PRAGMA foreign_keys = ON;
+  PRAGMA journal_mode = WAL;
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +67,58 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- Tentatives de paiement mobile money (une commande peut en avoir plusieurs).
+  CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    reference TEXT,
+    amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    raw TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Journal d'audit des actions sensibles.
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    user_id INTEGER,
+    action TEXT NOT NULL,
+    details TEXT,
+    ip TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+  CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action, created_at);
+
+  -- Alertes de sécurité / monitoring (pics de transactions, attaques...).
+  CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    type TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    message TEXT NOT NULL,
+    details TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
 `);
+
+// Migrations : ajoute les colonnes manquantes sur une base existante.
+function addColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+addColumn('orders', 'delivery_lat', 'REAL');
+addColumn('orders', 'delivery_lng', 'REAL');
+addColumn('orders', 'delivery_accuracy', 'REAL');
+addColumn('orders', 'payment_fee', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('orders', 'payment_status', "TEXT NOT NULL DEFAULT 'unpaid'");
+addColumn('orders', 'payment_reference', 'TEXT');
+addColumn('orders', 'payment_token', 'TEXT');
+addColumn('orders', 'paid_at', 'TEXT');
 
 function transaction(fn) {
   db.exec('BEGIN');
@@ -89,6 +141,12 @@ function getSettings() {
     is_open: (s.is_open ?? '1') === '1',
     restaurant_phone: s.restaurant_phone ?? '+228 97 98 02 79',
     restaurant_address: s.restaurant_address ?? 'Lomé, Togo',
+    // Frais de paiement mobile money reportés sur le client (en %).
+    payment_fee_percent: Number(s.payment_fee_percent ?? 2),
+    // Seuils de détection de pic de transactions.
+    spike_min_orders: Number(s.spike_min_orders ?? 10),
+    spike_factor: Number(s.spike_factor ?? 3),
+    high_amount_alert: Number(s.high_amount_alert ?? 100000),
   };
 }
 

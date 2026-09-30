@@ -8,8 +8,9 @@ import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
+import 'gps_picker_screen.dart';
 
-/// Finalisation de la commande. Renvoie la [Order] créée via `Navigator.pop`.
+/// Finalisation de la commande. Retourne la [Order] créée via `Navigator.pop`.
 class CheckoutScreen extends StatefulWidget {
   const CheckoutScreen({super.key});
 
@@ -26,6 +27,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   String _payment = 'cash';
   AppSettings? _settings;
   bool _submitting = false;
+  LocationData? _location;
 
   @override
   void initState() {
@@ -47,6 +49,24 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   int get _deliveryFee => _mode == 'delivery' ? (_settings?.deliveryFee ?? 0) : 0;
+  int get _paymentFee {
+    final settings = _settings;
+    if (settings == null || _payment == 'cash') return 0;
+    final subtotal = context.read<CartProvider>().subtotal;
+    final total = subtotal + _deliveryFee;
+    // Frais = ceil(total * 2% / 100)
+    return ((total * settings.paymentFeePercent + 99) ~/ 100);
+  }
+
+  Future<void> _selectLocation() async {
+    final loc = await Navigator.push<LocationData>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GpsPickerScreen(initialLat: _location?.lat, initialLng: _location?.lng),
+      ),
+    );
+    if (loc != null) setState(() => _location = loc);
+  }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -60,6 +80,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       showMessage(context, 'Commande minimum : ${formatPrice(settings.minOrder)}', error: true);
       return;
     }
+    if (_mode == 'delivery' && _location == null) {
+      showMessage(context, 'Veuillez sélectionner votre localisation', error: true);
+      return;
+    }
 
     setState(() => _submitting = true);
     try {
@@ -70,6 +94,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         'phone': _phone.text.trim(),
         'note': _note.text.trim(),
         'payment_method': _payment,
+        'location': _mode == 'delivery' ? _location?.toJson() : null,
       });
       cart.clear();
       // Retient l'adresse pour la prochaine fois.
@@ -137,6 +162,38 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 ),
                 validator: (v) =>
                     _mode == 'delivery' && (v == null || v.trim().isEmpty) ? 'Indiquez votre adresse' : null,
+              ),
+              const SizedBox(height: 14),
+              const _Label('Localisation GPS'),
+              Material(
+                color: _location != null ? Colors.green.shade50 : Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  onTap: _selectLocation,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.map_rounded, color: _location != null ? Colors.green : AppColors.red),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _location != null
+                                ? '${_location!.lat.toStringAsFixed(4)}, ${_location!.lng.toStringAsFixed(4)}'
+                                : 'Cliquer pour sélectionner votre position',
+                            style: TextStyle(
+                              color: _location != null ? Colors.green.shade900 : AppColors.muted,
+                              fontSize: _location != null ? 13 : 14,
+                              fontWeight: _location != null ? FontWeight.w600 : FontWeight.w400,
+                            ),
+                          ),
+                        ),
+                        Icon(Icons.arrow_forward_rounded, color: _location != null ? Colors.green : AppColors.red, size: 18),
+                      ],
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(height: 16),
             ] else if (_settings != null) ...[
@@ -211,8 +268,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     const Divider(height: 20),
                     _TotalRow('Sous-total', cart.subtotal),
                     if (_mode == 'delivery') _TotalRow('Livraison', _deliveryFee),
+                    if (_payment != 'cash' && _paymentFee > 0) _TotalRow('Frais moyen paiement', _paymentFee),
                     const SizedBox(height: 6),
-                    _TotalRow('Total', cart.subtotal + _deliveryFee, bold: true),
+                    _TotalRow('Total', cart.subtotal + _deliveryFee + (_payment != 'cash' ? _paymentFee : 0), bold: true),
                   ],
                 ),
               ),
@@ -227,10 +285,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         child: SafeArea(
           top: false,
           child: FilledButton(
-            onPressed: _submitting || cart.isEmpty ? null : _submit,
+            onPressed: _submitting || cart.isEmpty || (_mode == 'delivery' && _location == null) ? null : _submit,
             child: _submitting
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
-                : Text('Commander • ${formatPrice(cart.subtotal + _deliveryFee)}'),
+                : Text('Commander • ${formatPrice(cart.subtotal + _deliveryFee + (_payment != 'cash' ? _paymentFee : 0))}'),
           ),
         ),
       ),
