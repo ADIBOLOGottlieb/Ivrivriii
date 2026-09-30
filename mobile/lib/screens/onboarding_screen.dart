@@ -47,7 +47,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> with SingleTickerPr
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       body: Stack(
         children: [
           PageView(
@@ -85,7 +85,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> with SingleTickerPr
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.white.withValues(alpha: 0.95)],
+                  colors: [Colors.transparent, Theme.of(context).colorScheme.surface.withValues(alpha: 0.95)],
                 ),
               ),
               child: SafeArea(

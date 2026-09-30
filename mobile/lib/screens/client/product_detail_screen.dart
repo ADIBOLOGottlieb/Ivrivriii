@@ -42,7 +42,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final p = widget.product;
     final topPad = MediaQuery.paddingOf(context).top;
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -70,9 +70,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               preferredSize: const Size.fromHeight(24),
               child: Container(
                 height: 24,
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
                 ),
               ),
             ),
@@ -132,7 +132,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       bottomNavigationBar: Container(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: Theme.of(context).colorScheme.surface,
           boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 16, offset: const Offset(0, -4))],
         ),
         child: SafeArea(

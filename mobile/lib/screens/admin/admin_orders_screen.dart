@@ -166,9 +166,9 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                       selected: _filter == f.key,
                       showCheckmark: false,
                       selectedColor: AppColors.red,
-                      backgroundColor: Colors.white,
+                      backgroundColor: Theme.of(context).colorScheme.surface,
                       labelStyle: TextStyle(
-                        color: _filter == f.key ? Colors.white : AppColors.ink,
+                        color: _filter == f.key ? Colors.white : Theme.of(context).colorScheme.onSurface,
                         fontWeight: FontWeight.w700,
                       ),
                       onSelected: (_) {

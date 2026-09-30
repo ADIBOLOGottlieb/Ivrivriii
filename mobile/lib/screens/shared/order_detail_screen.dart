@@ -399,7 +399,7 @@ class _Timeline extends StatelessWidget {
                           fontFamily: 'Poppins',
                           fontSize: 14,
                           fontWeight: i == current ? FontWeight.w800 : FontWeight.w500,
-                          color: i <= current ? AppColors.ink : AppColors.muted,
+                          color: i <= current ? Theme.of(context).colorScheme.onSurface : AppColors.muted,
                         ),
                         child: Text(statusLabel(steps[i], delivery: order.isDelivery)),
                       ),

@@ -110,9 +110,9 @@ class CartScreen extends StatelessWidget {
           ? null
           : Container(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
               ),
               child: SafeArea(
                 top: false,
@@ -127,7 +127,7 @@ class CartScreen extends StatelessWidget {
                         AnimatedCount(
                           value: cart.subtotal,
                           format: formatPrice,
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink),
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
                         ),
                       ],
                     ),

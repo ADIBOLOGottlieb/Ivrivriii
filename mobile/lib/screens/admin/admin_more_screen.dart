@@ -266,7 +266,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                                 backgroundColor: AppColors.yellow,
                                 child: Text(
                                   c.user.name.isEmpty ? '?' : c.user.name[0].toUpperCase(),
-                                  style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.ink),
+                                  style: const TextStyle(fontWeight: FontWeight.w900),
                                 ),
                               ),
                               title: Text(c.user.name, style: const TextStyle(fontWeight: FontWeight.w800)),

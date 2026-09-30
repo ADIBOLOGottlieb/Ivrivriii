@@ -81,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Card(
                       color: AppColors.yellow,
                       child: ListTile(
-                        leading: const Icon(Icons.notifications_active_rounded, color: AppColors.ink),
+                        leading: const Icon(Icons.notifications_active_rounded),
                         title: Text(
                           '${s.pending} commande${s.pending > 1 ? 's' : ''} en attente',
                           style: const TextStyle(fontWeight: FontWeight.w900),
@@ -162,7 +162,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   leading: CircleAvatar(
                                     backgroundColor: i == 0 ? AppColors.yellow : AppColors.cream,
                                     child: Text('${i + 1}',
-                                        style: const TextStyle(fontWeight: FontWeight.w900, color: AppColors.ink)),
+                                        style: const TextStyle(fontWeight: FontWeight.w900)),
                                   ),
                                   title: Text(s.topProducts[i].name,
                                       style: const TextStyle(fontWeight: FontWeight.w700)),

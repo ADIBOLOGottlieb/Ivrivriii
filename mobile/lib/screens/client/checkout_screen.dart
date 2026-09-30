@@ -167,7 +167,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               style: SegmentedButton.styleFrom(
                 selectedBackgroundColor: AppColors.red,
                 selectedForegroundColor: Colors.white,
-                backgroundColor: Colors.white,
+                backgroundColor: Theme.of(context).colorScheme.surface,
               ),
             ),
             const SizedBox(height: 20),
@@ -186,7 +186,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               const SizedBox(height: 14),
               const _Label('Localisation GPS'),
               Material(
-                color: _location != null ? Colors.green.shade50 : Colors.grey.shade50,
+                color: _location != null
+                    ? AppColors.green.withValues(alpha: 0.12)
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(12),
                 child: InkWell(
                   onTap: _selectLocation,
@@ -203,7 +205,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                                 ? '${_location!.lat.toStringAsFixed(4)}, ${_location!.lng.toStringAsFixed(4)}'
                                 : 'Cliquer pour sélectionner votre position',
                             style: TextStyle(
-                              color: _location != null ? Colors.green.shade900 : AppColors.muted,
+                              color: _location != null ? AppColors.green : AppColors.muted,
                               fontSize: _location != null ? 13 : 14,
                               fontWeight: _location != null ? FontWeight.w600 : FontWeight.w400,
                             ),
@@ -301,7 +303,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         ),
       ),
       bottomNavigationBar: Container(
-        color: Colors.white,
+        color: Theme.of(context).colorScheme.surface,
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
         child: SafeArea(
           top: false,
@@ -339,7 +341,7 @@ class _TotalRow extends StatelessWidget {
     final style = TextStyle(
       fontWeight: bold ? FontWeight.w900 : FontWeight.w500,
       fontSize: bold ? 17 : 14,
-      color: bold ? AppColors.red : AppColors.ink,
+      color: bold ? AppColors.red : Theme.of(context).colorScheme.onSurface,
     );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),

@@ -388,7 +388,7 @@ class _CategoryPill extends StatelessWidget {
           curve: Curves.easeOutCubic,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? AppColors.red : Colors.white,
+            color: selected ? AppColors.red : Theme.of(context).colorScheme.surface,
             borderRadius: BorderRadius.circular(30),
             boxShadow: [
               BoxShadow(
@@ -412,7 +412,7 @@ class _CategoryPill extends StatelessWidget {
                 duration: const Duration(milliseconds: 280),
                 style: TextStyle(
                   fontFamily: 'Poppins',
-                  color: selected ? Colors.white : AppColors.ink,
+                  color: selected ? Colors.white : Theme.of(context).colorScheme.onSurface,
                   fontWeight: FontWeight.w700,
                   fontSize: 13.5,
                 ),
