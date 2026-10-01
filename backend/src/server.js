@@ -16,7 +16,10 @@ const payments = require('./payments');
 seedIfEmpty();
 
 const app = express();
-app.set('trust proxy', process.env.TRUST_PROXY ?? 'loopback');
+// TRUST_PROXY=1 (nombre de proxys devant le serveur, ex : Render) ou une liste d'IP / 'loopback'.
+// Un nombre doit être passé en Number : en texte, Express le lirait comme une adresse IP.
+const trustProxy = process.env.TRUST_PROXY ?? 'loopback';
+app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 app.disable('x-powered-by');
 // La CSP des pages de paiement est définie dans payments.js ; l'API ne sert que du JSON.
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));

@@ -1,0 +1,32 @@
+# Déploiement de l'API sur Render (offre gratuite).
+# render.com → New → Blueprint → choisir ce dépôt : Render lit ce fichier.
+#
+# Offre gratuite : le serveur s'endort après 15 min sans visite (≈ 50 s de réveil)
+# et son disque est effacé à chaque redémarrage. La base est alors recréée avec le
+# menu de démonstration et le compte admin : parfait pour des tests, pas pour la production.
+services:
+  - type: web
+    name: ivrivrii-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      # Clé de signature des sessions, générée aléatoirement par Render.
+      - key: JWT_SECRET
+        generateValue: true
+      # Render est devant le serveur : un proxy de confiance (vraies IP clients pour l'anti-abus).
+      - key: TRUST_PROXY
+        value: "1"
+      - key: ADMIN_PHONE
+        value: "0700000000"
+      # Demandé lors de la création : choisissez un mot de passe solide.
+      - key: ADMIN_PASSWORD
+        sync: false

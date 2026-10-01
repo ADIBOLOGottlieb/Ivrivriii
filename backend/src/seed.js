@@ -38,7 +38,12 @@ function seedIfEmpty() {
     db.prepare(`INSERT INTO users (name, phone, password_hash, role) VALUES (?, ?, ?, 'admin')`).run(
       'Administrateur', phone, bcrypt.hashSync(password, 10),
     );
-    console.log(`👤 Compte admin créé : ${phone} / ${password} (changez le mot de passe !)`);
+    // Un mot de passe fourni par l'environnement n'est jamais écrit dans les journaux.
+    console.log(
+      process.env.ADMIN_PASSWORD
+        ? `👤 Compte admin créé : ${phone}`
+        : `👤 Compte admin créé : ${phone} / ${password} (changez le mot de passe !)`,
+    );
   }
 
   const hasCategories = db.prepare('SELECT id FROM categories LIMIT 1').get();
