@@ -22,6 +22,9 @@ class AuthProvider extends ChangeNotifier {
   /// Handles offline mode gracefully - retains token if server is unreachable
   Future<void> init() async {
     try {
+      // Réveille le serveur pendant l'écran d'accueil (jusqu'à 90 s sur l'offre gratuite) :
+      // la connexion qui suit ne tombera pas sur un serveur endormi.
+      await Api.instance.wakeUp();
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString(_tokenKey);
 

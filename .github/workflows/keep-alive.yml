@@ -1,0 +1,20 @@
+# Garde l'API Render éveillée pendant la phase de test.
+# L'offre gratuite endort le serveur après 15 min sans visite : le réveil prend 30 à 60 s
+# (l'app affiche alors « Connexion au serveur… ») et la base de données est effacée.
+# Un service allumé en continu consomme ≈ 744 h/mois, sous le quota gratuit de 750 h :
+# supprimez ce fichier si vous ajoutez d'autres services gratuits sur le même compte Render.
+# Remarque : GitHub peut retarder les tâches planifiées de quelques minutes, et les suspend
+# après 60 jours sans activité sur le dépôt.
+name: Keep alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health
+        run: curl -fsS --max-time 90 --retry 2 https://ivrivrii-api.onrender.com/api/health

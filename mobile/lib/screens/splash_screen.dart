@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
@@ -14,9 +16,21 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
   late final AnimationController _pulse =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat();
+  // Le réveil du serveur peut durer jusqu'à une minute : on explique l'attente.
+  late final Timer _slowTimer = Timer(const Duration(seconds: 4), () {
+    if (mounted) setState(() => _slow = true);
+  });
+  bool _slow = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _slowTimer; // Démarre le minuteur.
+  }
 
   @override
   void dispose() {
+    _slowTimer.cancel();
     _pulse.dispose();
     super.dispose();
   }
@@ -68,6 +82,29 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 child: Text(
                   'Le goût qui fait chanter le coq !',
                   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+              const SizedBox(height: 28),
+              AnimatedOpacity(
+                opacity: _slow ? 1 : 0,
+                duration: const Duration(milliseconds: 400),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 40),
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                      ),
+                      SizedBox(height: 12),
+                      Text(
+                        "Connexion au serveur…\nAu premier lancement, cela peut prendre jusqu'à une minute.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],

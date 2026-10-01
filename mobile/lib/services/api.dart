@@ -142,7 +142,10 @@ class Api {
   static const int _maxRetries = 3;
   static const int _baseDelayMs = 200;
   static const int _maxDelayMs = 500;
-  static const Duration _requestTimeout = Duration(seconds: 15);
+  // Le serveur gratuit (Render) s'endort après 15 min sans visite et met 30 à 60 s à se
+  // réveiller : 45 s laisse le temps au réveil sans attendre indéfiniment.
+  static const Duration _requestTimeout = Duration(seconds: 45);
+  static const Duration _wakeUpTimeout = Duration(seconds: 90);
 
   /// Called when the server responds with 401 (expired session)
   void Function()? onUnauthorized;
@@ -293,21 +296,14 @@ class Api {
         }
       } on TimeoutException catch (e) {
         _log('TimeoutException: $e');
-        lastError = ApiException(
-          'Le serveur ne répond pas. Vérifiez votre connexion.',
+        // Pas de nouvelle tentative après 45 s d'attente : l'utilisateur patienterait plus de 2 min.
+        _circuitBreaker.recordFailure();
+        throw ApiException(
+          'Le serveur met trop de temps à répondre. Réessayez dans quelques secondes.',
           null,
           true,
           e,
         );
-
-        if (attempt < attempts - 1) {
-          final backoff = _calculateBackoff(attempt);
-          _log('Waiting ${backoff.inMilliseconds}ms before retry...');
-          await Future.delayed(backoff);
-        } else {
-          _circuitBreaker.recordFailure();
-          throw lastError;
-        }
       } on http.ClientException catch (e) {
         _log('ClientException: $e');
         lastError = ApiException(
@@ -401,6 +397,19 @@ class Api {
       'address': address,
     });
     return (r['token'] as String, AppUser.fromJson(r['user']));
+  }
+
+  /// Réveille le serveur (offre gratuite Render endormie) : à appeler au démarrage,
+  /// pendant l'écran d'accueil. Ne lève jamais d'erreur ; renvoie false si injoignable.
+  Future<bool> wakeUp() async {
+    try {
+      final res = await http.get(Uri.parse('$apiBaseUrl/api/health')).timeout(_wakeUpTimeout);
+      if (res.statusCode == 200) _circuitBreaker.recordSuccess();
+      return res.statusCode == 200;
+    } catch (e) {
+      _log('Wake-up failed: $e');
+      return false;
+    }
   }
 
   /// Get current user info
