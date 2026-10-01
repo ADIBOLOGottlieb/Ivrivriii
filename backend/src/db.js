@@ -120,6 +120,47 @@ addColumn('orders', 'payment_reference', 'TEXT');
 addColumn('orders', 'payment_token', 'TEXT');
 addColumn('orders', 'paid_at', 'TEXT');
 
+// Paiements mobile money : suivi de l'argent (brut, frais, net, reversement, remboursement).
+for (const [col, def] of [
+  ['operator', 'TEXT'],
+  ['phone', 'TEXT'],
+  ['identifier', 'TEXT'],
+  ['provider_reference', 'TEXT'],
+  ['operator_reference', 'TEXT'],
+  ['gross_amount', 'INTEGER'],
+  ['provider_fee', 'INTEGER NOT NULL DEFAULT 0'],
+  ['net_amount', 'INTEGER'],
+  ['message', 'TEXT'],
+  ['simulated', 'INTEGER NOT NULL DEFAULT 0'],
+  ['provider_state', 'TEXT'],
+  ['needs_review', 'INTEGER NOT NULL DEFAULT 0'],
+  ['expires_at', 'TEXT'],
+  ['paid_at', 'TEXT'],
+  ['last_checked_at', 'TEXT'],
+  ['validated_by', 'INTEGER'],
+  ['settlement_status', 'TEXT'],
+  ['settled_at', 'TEXT'],
+  ['settlement_reference', 'TEXT'],
+  ['refund_status', 'TEXT'],
+  ['refund_reference', 'TEXT'],
+  ['refunded_at', 'TEXT'],
+  ['refunded_by', 'INTEGER'],
+]) {
+  addColumn('payments', col, def);
+}
+// Reprise des anciennes lignes (avant la refonte des paiements).
+db.exec(`
+  UPDATE payments SET operator = (SELECT payment_method FROM orders WHERE orders.id = payments.order_id)
+    WHERE operator IS NULL;
+  UPDATE payments SET provider_reference = reference WHERE provider_reference IS NULL AND reference IS NOT NULL;
+  UPDATE payments SET gross_amount = amount, net_amount = amount, paid_at = COALESCE(paid_at, updated_at),
+    settlement_status = 'en_attente' WHERE status = 'paid' AND gross_amount IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_identifier ON payments(identifier);
+  CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id, id);
+  CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, paid_at);
+  CREATE INDEX IF NOT EXISTS idx_payments_provider_ref ON payments(provider_reference);
+`);
+
 function transaction(fn) {
   db.exec('BEGIN');
   try {
@@ -147,6 +188,8 @@ function getSettings() {
     spike_min_orders: Number(s.spike_min_orders ?? 10),
     spike_factor: Number(s.spike_factor ?? 3),
     high_amount_alert: Number(s.high_amount_alert ?? 100000),
+    // Annulation automatique d'une commande mobile money non payée (minutes).
+    momo_unpaid_cancel_minutes: Number(s.momo_unpaid_cancel_minutes ?? 30),
   };
 }
 

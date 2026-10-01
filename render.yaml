@@ -30,3 +30,28 @@ services:
       # Demandé lors de la création : choisissez un mot de passe solide.
       - key: ADMIN_PASSWORD
         sync: false
+      # ---------- Paiements mobile money (Flooz / Mixx by Yas) ----------
+      # simulation (aucun argent réel) | paygate (recommandé au Togo) | kadev | direct (futur accès opérateur).
+      # Sans PAYGATE_AUTH_TOKEN, « paygate » retombe en simulation.
+      - key: PAYMENT_PROVIDER
+        value: simulation
+      # Jeton API du compte marchand PayGate Global (tableau de bord PayGate → API).
+      - key: PAYGATE_AUTH_TOKEN
+        sync: false
+      # Numéros marchands du restaurant (affichés masqués dans l'app admin, jamais en clair).
+      - key: MERCHANT_FLOOZ_NUMBER
+        sync: false
+      - key: MERCHANT_MIXX_NUMBER
+        sync: false
+      - key: MERCHANT_DISPLAY_NAME
+        value: Ivrivrii Chicken
+      # Commission prélevée par l'agrégateur sur chaque paiement (en %), pour calculer le net reversé.
+      - key: PROVIDER_FEE_PERCENT
+        value: "0"
+      # KADEV PAY (ancien parcours navigateur), uniquement si PAYMENT_PROVIDER=kadev.
+      - key: KADEV_PUBLIC_KEY
+        sync: false
+      - key: KADEV_SECRET_KEY
+        sync: false
+      - key: KADEV_WEBHOOK_SECRET
+        sync: false

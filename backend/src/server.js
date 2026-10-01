@@ -45,6 +45,15 @@ app.use(
 app.use(payments.router);
 app.use(express.json({ limit: '100kb' }));
 
+// Compte client (profil, mot de passe, avatar, adresses...) : backend/src/account.js.
+let account = null;
+try {
+  account = require('./account');
+  app.use(account.router);
+} catch (e) {
+  if (e.code !== 'MODULE_NOT_FOUND') throw e;
+}
+
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOAD_DIR));
@@ -61,6 +70,9 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => cb(null, /^image\/(jpeg|png|webp)$/.test(file.mimetype)),
 });
+
+// Quantité maximale d'un même article dans une commande (une seule constante, exposée dans /api/settings).
+const MAX_QUANTITY_PER_ITEM = 999;
 
 const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivering', 'delivered', 'cancelled'];
 const PAYMENT_METHODS = ['cash', ...payments.MOBILE_METHODS];
@@ -105,9 +117,10 @@ const orderLimiter = rateLimit({
   message: { error: 'Trop de commandes en peu de temps. Patientez quelques minutes.' },
 });
 
-function publicUser(u) {
+function basicPublicUser(u) {
   return { id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, address: u.address, created_at: u.created_at };
 }
+const publicUser = account?.publicUser ?? basicPublicUser;
 
 function mapProduct(p) {
   return { ...p, available: !!p.available, popular: !!p.popular };
@@ -117,8 +130,10 @@ function mapProduct(p) {
 function presentOrder(o, viewer) {
   if (!o) return o;
   const { payment_token, ...rest } = o;
+  // pay_url uniquement pour le parcours navigateur (KADEV) ; sinon paiement par push USSD depuis l'app.
   const canPay =
-    viewer && viewer.id === o.user_id && payment_token && ['pending', 'failed'].includes(o.payment_status) && o.status !== 'cancelled';
+    viewer && viewer.id === o.user_id && payment_token && payments.usesBrowserCheckout(o.payment_method) &&
+    ['pending', 'failed', 'expired'].includes(o.payment_status) && o.status !== 'cancelled';
   return { ...rest, pay_url: canPay ? `/pay/${o.id}?t=${payment_token}` : null };
 }
 
@@ -180,28 +195,6 @@ app.post('/api/auth/login', loginLimiter, h((req, res) => {
   res.json({ token: signToken(user), user: publicUser(user) });
 }));
 
-app.get('/api/auth/me', requireAuth, h((req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  if (!user) throw httpError(404, 'Utilisateur introuvable');
-  res.json(publicUser(user));
-}));
-
-app.put('/api/auth/me', requireAuth, h((req, res) => {
-  const { name, email, address, password } = req.body || {};
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  if (!user) throw httpError(404, 'Utilisateur introuvable');
-  if (password && password.length < 6) throw httpError(400, 'Le mot de passe doit contenir au moins 6 caractères');
-  db.prepare('UPDATE users SET name = ?, email = ?, address = ?, password_hash = ? WHERE id = ?').run(
-    name?.trim() || user.name,
-    email !== undefined ? email?.trim() || null : user.email,
-    address !== undefined ? address?.trim() || null : user.address,
-    password ? bcrypt.hashSync(password, 10) : user.password_hash,
-    user.id,
-  );
-  if (password) audit('password_changed', { userId: user.id, ip: req.ip });
-  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)));
-}));
-
 // ---------- Catalogue public ----------
 
 app.get('/api/settings', h((_req, res) => {
@@ -214,6 +207,9 @@ app.get('/api/settings', h((_req, res) => {
     restaurant_address: s.restaurant_address,
     payment_fee_percent: s.payment_fee_percent,
     payment_mode: payments.paymentInfo().mode,
+    payment_provider: payments.paymentInfo().provider,
+    max_quantity_per_item: MAX_QUANTITY_PER_ITEM,
+    momo_unpaid_cancel_minutes: s.momo_unpaid_cancel_minutes,
   });
 }));
 
@@ -256,11 +252,17 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
 
   // Les prix sont toujours recalculés côté serveur à partir du catalogue.
   const getProduct = db.prepare('SELECT * FROM products WHERE id = ?');
+  const perProduct = new Map();
   const lines = items.map((it) => {
-    const qty = Math.floor(Number(it.quantity));
-    const p = getProduct.get(Number(it.product_id));
+    const qty = Number(it?.quantity);
+    const p = getProduct.get(Number(it?.product_id));
     if (!p || !p.available) throw httpError(400, `Un article n'est plus disponible`);
-    if (!(qty >= 1 && qty <= 50)) throw httpError(400, 'Quantité invalide');
+    if (!Number.isInteger(qty) || qty < 1) throw httpError(400, 'Quantité invalide');
+    const totalQty = (perProduct.get(p.id) || 0) + qty;
+    if (totalQty > MAX_QUANTITY_PER_ITEM) {
+      throw httpError(400, `Quantité maximale : ${MAX_QUANTITY_PER_ITEM} par article (${p.name})`);
+    }
+    perProduct.set(p.id, totalQty);
     return { product: p, qty };
   });
 
@@ -327,6 +329,7 @@ app.post('/api/orders/:id/cancel', requireAuth, h((req, res) => {
     throw httpError(400, 'Commande déjà payée : appelez le restaurant pour l\'annuler et être remboursé');
   }
   db.prepare(`UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`).run(order.id);
+  payments.cancelPendingAttempts(order.id, 'Commande annulée par le client');
   audit('order_cancelled', { userId: req.user.id, details: { orderId: order.id, by: 'client' }, ip: req.ip });
   res.json(presentOrder(loadOrder(order.id), req.user));
 }));
@@ -386,6 +389,7 @@ app.patch('/api/admin/orders/:id/status', requireAdmin, h((req, res) => {
     throw httpError(400, 'Paiement pas encore reçu : impossible de lancer la commande');
   }
   db.prepare(`UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
+  if (status === 'cancelled') payments.cancelPendingAttempts(order.id, 'Commande annulée par le restaurant');
   audit('order_status', { userId: req.user.id, details: { orderId: order.id, from: order.status, to: status }, ip: req.ip });
   if (status === 'cancelled' && order.payment_status === 'paid') {
     raiseAlert('refund_needed', 'warning', `Commande n°${order.id} annulée alors qu'elle est payée (${order.total} FCFA) : remboursement à prévoir`,
@@ -500,6 +504,7 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     spike_min_orders: [2, 1000],
     spike_factor: [1, 50],
     high_amount_alert: [1000, 100000000],
+    momo_unpaid_cancel_minutes: [5, 1440],
   };
   const text = ['restaurant_phone', 'restaurant_address'];
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
@@ -508,7 +513,8 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     for (const [key, [min, max]] of Object.entries(numeric)) {
       if (req.body?.[key] === undefined) continue;
       const v = Number(req.body[key]);
-      if (!Number.isFinite(v) || v < min || v > max) throw httpError(400, `Valeur invalide pour ${key}`);
+      if (!Number.isFinite(v) || v < min || v > max) throw httpError(400, `Valeur invalide pour ${key} (entre ${min} et ${max})`);
+      if (key === 'momo_unpaid_cancel_minutes' && !Number.isInteger(v)) throw httpError(400, 'Délai en minutes entières');
       upsert.run(key, String(v));
       changed[key] = v;
     }
@@ -571,6 +577,9 @@ app.get('/api/admin/audit', requireAdmin, h((req, res) => {
   );
 }));
 
+// Paiements mobile money : push USSD, file à vérifier, encaissements, reversements, remboursements.
+app.use(payments.createApiRouter({ presentOrder, loadOrder }));
+
 app.get('/', (_req, res) => res.json({ name: 'Ivrivrii Chicken API', status: 'ok' }));
 
 // Erreurs non gérées (JSON invalide, fichier trop gros...).
@@ -581,6 +590,7 @@ app.use((err, req, res, _next) => {
 });
 
 startMonitoring();
+payments.startPaymentTasks();
 
 const PORT = Number(process.env.PORT) || 4000;
 app.listen(PORT, '0.0.0.0', () => {
