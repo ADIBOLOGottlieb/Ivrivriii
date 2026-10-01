@@ -27,11 +27,29 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = true;
   int? _selectedCategory;
   String _query = '';
+  // Gardé ici : le texte tapé survit aux reconstructions de l'en-tête épinglé.
+  final TextEditingController _searchCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onQueryChanged(String v) {
+    if (v == _query) return;
+    setState(() => _query = v);
+  }
+
+  void _clearQuery() {
+    _searchCtrl.clear();
+    _onQueryChanged('');
   }
 
   Future<void> _load() async {
@@ -78,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
+    final cartCount = context.select<CartProvider, int>((c) => c.count);
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) return SafeArea(child: ErrorRetry(error: _error!, onRetry: _load));
 
@@ -91,41 +110,24 @@ class _HomeScreenState extends State<HomeScreen> {
       onRefresh: _load,
       child: CustomScrollView(
         slivers: [
-          SliverToBoxAdapter(child: _Header(userName: user?.name ?? '', settings: _settings)),
-          SliverToBoxAdapter(
-            child: Transform.translate(
-              offset: const Offset(0, -26),
-              child: FadeSlideIn(
-                delay: const Duration(milliseconds: 150),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Material(
-                    elevation: 6,
-                    shadowColor: const Color(0x33A50E1E),
-                    borderRadius: BorderRadius.circular(16),
-                    child: TextField(
-                      onChanged: (v) => setState(() => _query = v),
-                      decoration: InputDecoration(
-                        hintText: 'Rechercher un plat...',
-                        prefixIcon: const Icon(Icons.search_rounded, color: AppColors.red),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: const BorderSide(color: AppColors.red, width: 1.5),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _HomeHeaderDelegate(
+              topPadding: MediaQuery.paddingOf(context).top,
+              firstName: (user?.name ?? '').trim().split(' ').first,
+              isOpen: _settings?.isOpen ?? true,
+              deliveryFee: _settings?.deliveryFee ?? 0,
+              cartCount: cartCount,
+              query: _query,
+              scheme: Theme.of(context).colorScheme,
+              controller: _searchCtrl,
+              onChanged: _onQueryChanged,
+              onClear: _clearQuery,
             ),
           ),
           SliverToBoxAdapter(
-            child: Transform.translate(
-              offset: const Offset(0, -14),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 12),
               child: SizedBox(
                 height: 50,
                 child: ListView(
@@ -208,103 +210,249 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class _Header extends StatelessWidget {
-  final String userName;
-  final AppSettings? settings;
-  const _Header({required this.userName, this.settings});
+/// En-tête épinglé de l'accueil : la bienvenue et le statut s'effacent au défilement,
+/// la barre de recherche et le panier restent toujours visibles sur une bande rouge compacte.
+class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final double topPadding;
+  final String firstName;
+  final bool isOpen;
+  final int deliveryFee;
+  final int cartCount;
+  final String query;
+  final ColorScheme scheme;
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  _HomeHeaderDelegate({
+    required this.topPadding,
+    required this.firstName,
+    required this.isOpen,
+    required this.deliveryFee,
+    required this.cartCount,
+    required this.query,
+    required this.scheme,
+    required this.controller,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  // Positions verticales (hors encoche), en pixels logiques.
+  static const double _rowTop = 14;
+  static const double _rowHeight = 60;
+  static const double _pillTop = 86;
+  static const double _searchTopExpanded = 134;
+  static const double _searchTopCollapsed = 8;
+  static const double _searchHeight = 52;
+  static const double _cartSize = 48;
+  static const double _bottomExpanded = 18;
+  static const double _bottomCollapsed = 10;
+  static const double _side = 20;
+  static const double _gap = 10;
+
+  // Déplié : encoche + 204 ; replié : encoche + 70.
+  @override
+  double get maxExtent => topPadding + _searchTopExpanded + _searchHeight + _bottomExpanded;
 
   @override
-  Widget build(BuildContext context) {
-    final firstName = userName.split(' ').first;
-    final isOpen = settings?.isOpen ?? true;
-    final cartCount = context.select<CartProvider, int>((c) => c.count);
-    return Container(
-      clipBehavior: Clip.antiAlias,
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [AppColors.red, AppColors.darkRed],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+  double get minExtent => topPadding + _searchTopCollapsed + _searchHeight + _bottomCollapsed;
+
+  static double _lerp(double a, double b, double t) => a + (b - a) * t;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    final range = maxExtent - minExtent;
+    final double t = range <= 0 ? 1.0 : (shrinkOffset / range).clamp(0.0, 1.0);
+    final double greetingOpacity = (1 - t * 1.6).clamp(0.0, 1.0);
+    final double pillOpacity = (1 - t * 2.2).clamp(0.0, 1.0);
+
+    final searchTop = topPadding + _lerp(_searchTopExpanded, _searchTopCollapsed, t);
+    final searchRight = _lerp(_side, _side + _cartSize + _gap, t);
+    final cartTop = topPadding +
+        _lerp(
+          _rowTop + (_rowHeight - _cartSize) / 2,
+          _searchTopCollapsed + (_searchHeight - _cartSize) / 2,
+          t,
+        );
+    final greeting = firstName.isEmpty ? 'Bonjour 👋' : 'Bonjour $firstName 👋';
+
+    return SizedBox.expand(
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [AppColors.red, AppColors.darkRed],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.vertical(bottom: Radius.circular(_lerp(32, 24, t))),
         ),
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(32)),
-      ),
-      child: Stack(
-        children: [
-          Positioned(top: -60, right: -40, child: _bubble(170)),
-          Positioned(bottom: -30, left: 60, child: _bubble(90)),
-          Padding(
-            padding: EdgeInsets.fromLTRB(20, MediaQuery.paddingOf(context).top + 14, 20, 46),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const AppLogo(size: 54),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: FadeSlideIn(
-                        offset: const Offset(0.15, 0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Stack(
+          children: [
+            Positioned(top: -60, right: -40, child: _bubble(170)),
+            Positioned(bottom: -30, left: 60, child: _bubble(90)),
+            // Logo + bienvenue (s'efface en fondu).
+            Positioned(
+              top: topPadding + _rowTop - shrinkOffset,
+              left: _side,
+              right: _side + _cartSize + _gap,
+              child: IgnorePointer(
+                ignoring: greetingOpacity == 0,
+                child: Opacity(
+                  opacity: greetingOpacity,
+                  child: Row(
+                    children: [
+                      const AppLogo(size: 54),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: FadeSlideIn(
+                          offset: const Offset(0.15, 0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                greeting,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                              ),
+                              const Text(
+                                "Qu'est-ce qui vous ferait plaisir ?",
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // Pastille Ouvert / Fermé (s'efface en fondu).
+            Positioned(
+              top: topPadding + _pillTop - shrinkOffset,
+              left: _side,
+              right: _side,
+              child: IgnorePointer(
+                child: Opacity(
+                  opacity: pillOpacity,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: FadeSlideIn(
+                      delay: const Duration(milliseconds: 100),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(30),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('Bonjour $firstName 👋', style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                            const Text(
-                              'Qu\'est-ce qui vous ferait plaisir ?',
-                              style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w800, height: 1.25),
+                            _PulsingDot(
+                              color: isOpen ? const Color(0xFF6CF09A) : Colors.white54,
+                              animate: isOpen,
+                            ),
+                            const SizedBox(width: 10),
+                            Flexible(
+                              child: Text(
+                                isOpen
+                                    ? 'Ouvert • Livraison ${formatPrice(deliveryFee)}'
+                                    : 'Fermé pour le moment',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                ),
+                              ),
                             ),
                           ],
                         ),
                       ),
                     ),
-                    Material(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      shape: const CircleBorder(),
-                      child: IconButton(
-                        onPressed: () => ClientShell.of(context)?.goTo(ClientShellState.cartTab),
-                        icon: Badge(
-                          isLabelVisible: cartCount > 0,
-                          backgroundColor: AppColors.yellow,
-                          textColor: AppColors.ink,
-                          label: Text('$cartCount'),
-                          child: BounceOnChange(
-                            trigger: cartCount,
-                            child: const Icon(Icons.shopping_bag_rounded, color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 18),
-                FadeSlideIn(
-                  delay: const Duration(milliseconds: 100),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _PulsingDot(color: isOpen ? const Color(0xFF6CF09A) : Colors.white54, animate: isOpen),
-                        const SizedBox(width: 10),
-                        Flexible(
-                          child: Text(
-                            isOpen
-                                ? 'Ouvert • Livraison ${formatPrice(settings?.deliveryFee ?? 0)}'
-                                : 'Fermé pour le moment',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
-                          ),
-                        ),
-                      ],
+              ),
+            ),
+            // Barre de recherche (toujours visible).
+            Positioned(
+              top: searchTop,
+              left: _side,
+              right: searchRight,
+              height: _searchHeight,
+              child: Material(
+                color: scheme.surface,
+                elevation: 6,
+                shadowColor: Colors.black.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(16),
+                clipBehavior: Clip.antiAlias,
+                child: Center(
+                  child: TextField(
+                    controller: controller,
+                    onChanged: onChanged,
+                    textInputAction: TextInputAction.search,
+                    cursorColor: AppColors.red,
+                    style: TextStyle(color: scheme.onSurface, fontSize: 15),
+                    decoration: InputDecoration(
+                      hintText: 'Rechercher un plat...',
+                      hintStyle: TextStyle(color: scheme.onSurfaceVariant),
+                      filled: false,
+                      isDense: true,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                      prefixIcon: const Icon(Icons.search_rounded, color: AppColors.red),
+                      suffixIcon: query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Effacer',
+                              icon: Icon(Icons.close_rounded, color: scheme.onSurfaceVariant),
+                              onPressed: onClear,
+                            ),
                     ),
                   ),
                 ),
-              ],
+              ),
             ),
-          ),
-        ],
+            // Bouton panier (toujours visible).
+            Positioned(
+              top: cartTop,
+              right: _side,
+              width: _cartSize,
+              height: _cartSize,
+              child: Material(
+                color: Colors.white.withValues(alpha: 0.18),
+                shape: const CircleBorder(),
+                child: IconButton(
+                  tooltip: 'Panier',
+                  onPressed: () => ClientShell.of(context)?.goTo(ClientShellState.cartTab),
+                  icon: Badge(
+                    isLabelVisible: cartCount > 0,
+                    backgroundColor: AppColors.yellow,
+                    textColor: AppColors.ink,
+                    label: Text('$cartCount'),
+                    child: BounceOnChange(
+                      trigger: cartCount,
+                      child: const Icon(Icons.shopping_bag_rounded, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -314,6 +462,18 @@ class _Header extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withValues(alpha: 0.07)),
       );
+
+  @override
+  bool shouldRebuild(covariant _HomeHeaderDelegate oldDelegate) {
+    return oldDelegate.topPadding != topPadding ||
+        oldDelegate.firstName != firstName ||
+        oldDelegate.isOpen != isOpen ||
+        oldDelegate.deliveryFee != deliveryFee ||
+        oldDelegate.cartCount != cartCount ||
+        oldDelegate.query != query ||
+        oldDelegate.scheme != scheme ||
+        oldDelegate.controller != controller;
+  }
 }
 
 class _PulsingDot extends StatefulWidget {
