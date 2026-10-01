@@ -1,10 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../models.dart';
 import '../../services/api.dart';
-import '../../utils/pagination.dart';
+import '../../services/order_events.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
@@ -14,7 +12,11 @@ import '../shared/order_detail_screen.dart';
 class OrdersScreen extends StatefulWidget {
   /// Vrai quand l'onglet est visible : on rafraîchit à l'affichage.
   final bool active;
-  const OrdersScreen({super.key, this.active = false});
+
+  /// Change à chaque appui sur l'onglet « Commandes » (même déjà actif) : force un rechargement.
+  final int refreshToken;
+
+  const OrdersScreen({super.key, this.active = false, this.refreshToken = 0});
 
   @override
   State<OrdersScreen> createState() => _OrdersScreenState();
@@ -24,17 +26,14 @@ class _OrdersScreenState extends State<OrdersScreen> {
   List<Order>? _orders;
   Object? _error;
   late SmartPoller _poller;
-  late RequestDeduplicator<List<Order>> _deduplicator;
-  final ScrollController _scrollController = ScrollController();
+  // Seule la réponse de la dernière requête lancée est affichée (pas d'ancienne liste « En attente »).
+  int _gen = 0;
 
   @override
   void initState() {
     super.initState();
 
-    // Initialize request deduplicator
-    _deduplicator = RequestDeduplicator();
-
-    // Initialize smart poller for active orders
+    // Rafraîchissement de fond des commandes en cours.
     _poller = SmartPoller(
       onPoll: () => _load(silent: true),
       getInterval: (_) => const Duration(seconds: 20),
@@ -42,43 +41,36 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
     _load();
     _poller.startPolling('pending');
-    _scrollController.addListener(_handleScroll);
+    ordersChanged.addListener(_onOrdersChanged);
   }
 
   @override
   void didUpdateWidget(OrdersScreen old) {
     super.didUpdateWidget(old);
-    if (widget.active && !old.active) _load();
+    if ((widget.active && !old.active) || widget.refreshToken != old.refreshToken) _load(silent: true);
   }
 
   @override
   void dispose() {
+    ordersChanged.removeListener(_onOrdersChanged);
     _poller.stop();
-    _scrollController.removeListener(_handleScroll);
-    _scrollController.dispose();
-    _deduplicator.clear();
     super.dispose();
   }
 
-  /// Handle scroll events for potential pagination.
-  void _handleScroll() {
-    if (_scrollController.position.pixels > _scrollController.position.maxScrollExtent - 500) {
-      // Could implement pagination here for users with many orders
-    }
-  }
+  void _onOrdersChanged() => _load(silent: true);
 
-  /// Load all orders with deduplication.
-  /// [silent] = true skips error UI (for background refresh)
+  /// Charge les commandes. [silent] = true : pas d'écran d'erreur (rafraîchissement de fond).
   Future<void> _load({bool silent = false}) async {
+    final gen = ++_gen;
     try {
-      final orders = await _deduplicator.dedupe('myOrders', () => Api.instance.myOrders());
-      if (!mounted) return;
+      final orders = await Api.instance.myOrders();
+      if (!mounted || gen != _gen) return;
       setState(() {
         _orders = orders;
         _error = null;
       });
     } catch (e) {
-      if (mounted && !silent) setState(() => _error = e);
+      if (mounted && gen == _gen && !silent) setState(() => _error = e);
     }
   }
 
@@ -105,33 +97,27 @@ class _OrdersScreenState extends State<OrdersScreen> {
         ],
       );
     } else {
-      // Use ListView.builder for efficient rendering of large lists
       body = ListView.builder(
-        controller: _scrollController,
         padding: const EdgeInsets.only(bottom: 24),
         itemCount: (active.isNotEmpty ? 1 : 0) + active.length + (past.isNotEmpty ? 1 : 0) + past.length,
         itemBuilder: (context, index) {
           int pos = 0;
 
-          // "En cours" section header
+          // Section « En cours »
           if (active.isNotEmpty) {
             if (index == pos) return const SectionTitle('En cours');
             pos++;
           }
-
-          // Active orders
           if (index < pos + active.length) {
             return _card(active[index - pos], index - pos);
           }
           pos += active.length;
 
-          // "Historique" section header
+          // Section « Historique »
           if (past.isNotEmpty) {
             if (index == pos) return const SectionTitle('Historique');
             pos++;
           }
-
-          // Past orders
           return _card(past[index - pos], active.length + (index - pos));
         },
       );
@@ -143,23 +129,22 @@ class _OrdersScreenState extends State<OrdersScreen> {
     );
   }
 
-  /// Build order card with fade-in animation and proper key tracking.
-  /// Using ValueKey prevents rebuild jank when list order changes.
+  /// Carte animée ; la clé stable évite les saccades quand l'ordre de la liste change.
   Widget _card(Order o, int index) => FadeSlideIn(
-    key: ValueKey('order-${o.id}'), // Stable key for list tracking
-    delay: FadeSlideIn.stagger(index),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-      child: OrderCard(
-        order: o,
-        onTap: () async {
-          await Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: o.id, initial: o)),
-          );
-          _load(); // Refresh after returning from detail screen
-        },
-      ),
-    ),
-  );
+        key: ValueKey('order-${o.id}'),
+        delay: FadeSlideIn.stagger(index),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: OrderCard(
+            order: o,
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => OrderDetailScreen(orderId: o.id, initial: o)),
+              );
+              if (mounted) _load(silent: true); // recharge au retour du détail
+            },
+          ),
+        ),
+      );
 }

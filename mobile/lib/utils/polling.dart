@@ -7,6 +7,8 @@ class SmartPoller {
   final Duration Function(String status)? getInterval;
   final Future<void> Function() onPoll;
   String _lastStatus = '';
+  // Vrai après stop() : une vérification encore en cours ne doit pas en reprogrammer une autre.
+  bool _stopped = false;
 
   SmartPoller({
     required this.onPoll,
@@ -31,18 +33,20 @@ class SmartPoller {
   /// Start polling with adaptive interval.
   void startPolling(String initialStatus) {
     _lastStatus = initialStatus;
+    _stopped = false;
     _scheduleNextPoll();
   }
 
   /// Stop polling (call in dispose()).
   void stop() {
+    _stopped = true;
     _timer?.cancel();
     _timer = null;
   }
 
   /// Update status and restart polling with new interval if status changed.
   void updateStatus(String newStatus) {
-    if (newStatus == _lastStatus) return;
+    if (newStatus == _lastStatus || _stopped) return;
 
     _lastStatus = newStatus;
     _timer?.cancel();
@@ -52,17 +56,19 @@ class SmartPoller {
     if (interval.inMinutes < 1) {
       _scheduleNextPoll();
     } else {
-      // Stop polling for stable statuses
-      stop();
+      _timer = null;
     }
   }
 
   void _scheduleNextPoll() {
+    if (_stopped) return;
+    // Un seul minuteur à la fois (updateStatus peut en avoir programmé un pendant onPoll).
+    _timer?.cancel();
     final interval = getInterval?.call(_lastStatus) ?? getDefaultInterval(_lastStatus);
 
-    // Skip polling for finished orders (1+ hour interval)
+    // Commande terminée : plus de vérification (sans bloquer une reprise par updateStatus).
     if (interval.inMinutes > 30) {
-      stop();
+      _timer = null;
       return;
     }
 

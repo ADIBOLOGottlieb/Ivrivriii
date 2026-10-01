@@ -5,10 +5,12 @@ import '../../models.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
 import '../../services/api.dart';
+import '../../services/order_events.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import 'gps_picker_screen.dart';
+import 'profile/saved_addresses_screen.dart';
 
 /// Finalisation de la commande. Retourne la [Order] créée via `Navigator.pop`.
 class CheckoutScreen extends StatefulWidget {
@@ -28,11 +30,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   AppSettings? _settings;
   bool _submitting = false;
   LocationData? _location;
+  // Dernière adresse remplie automatiquement (profil, GPS, « Mes adresses »).
+  String? _prefilledAddress;
 
   @override
   void initState() {
     super.initState();
     final user = context.read<AuthProvider>().user;
+    _prefilledAddress = user?.address;
     _address = TextEditingController(text: user?.address ?? '');
     _phone = TextEditingController(text: user?.phone ?? '');
     // FIX: Add proper error handling for settings API call
@@ -74,6 +79,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     return paymentFeeFor(cart.subtotal + _getDeliveryFee(), _payment, settings.paymentFeePercent);
   }
 
+  /// Remplit le champ adresse sans écraser ce que le client a tapé lui-même :
+  /// seulement s'il est vide ou s'il contient encore l'adresse pré-remplie précédente.
+  void _prefillAddress(String? address) {
+    final a = address?.trim() ?? '';
+    if (a.isEmpty) return;
+    final current = _address.text.trim();
+    if (current.isEmpty || current == (_prefilledAddress ?? '').trim()) {
+      _address.text = a;
+      _prefilledAddress = a;
+    }
+  }
+
   Future<void> _selectLocation() async {
     final loc = await Navigator.push<LocationData>(
       context,
@@ -81,7 +98,24 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         builder: (_) => GpsPickerScreen(initialLat: _location?.lat, initialLng: _location?.lng),
       ),
     );
-    if (loc != null) setState(() => _location = loc);
+    if (loc == null || !mounted) return;
+    setState(() {
+      _location = loc;
+      _prefillAddress(loc.address);
+    });
+  }
+
+  /// « Mes adresses » : remplit l'adresse et, si elle en a une, la position GPS.
+  Future<void> _pickSavedAddress() async {
+    final a = await showSavedAddressPicker(context);
+    if (a == null || !mounted) return;
+    setState(() {
+      _address.text = a.address;
+      _prefilledAddress = a.address;
+      if (a.lat != null && a.lng != null) {
+        _location = LocationData(lat: a.lat!, lng: a.lng!, address: a.address);
+      }
+    });
   }
 
   Future<void> _submit() async {
@@ -113,6 +147,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         'location': _mode == 'delivery' ? _location?.toJson() : null,
       });
       cart.clear();
+      notifyOrdersChanged();
       // Retient l'adresse pour la prochaine fois.
       if (!mounted) return;
       final auth = context.read<AuthProvider>();
@@ -124,9 +159,21 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         builder: (ctx) => AlertDialog(
           icon: const Text('🎉', style: TextStyle(fontSize: 48)),
           title: const Text('Commande envoyée !'),
-          content: Text(
-            'Votre commande n°${order.id} a bien été reçue. ${isMobileMoney(order.paymentMethod) ? 'Réglez-la maintenant par ${paymentLabel(order.paymentMethod)} pour que le restaurant la lance.' : 'Vous pouvez suivre sa préparation en temps réel.'}',
-            textAlign: TextAlign.center,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Votre commande n°${order.id} a bien été reçue. ${isMobileMoney(order.paymentMethod) ? 'Réglez-la maintenant par ${paymentLabel(order.paymentMethod)} pour que le restaurant la lance.' : 'Vous pouvez suivre sa préparation en temps réel.'}',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              // Montant officiel renvoyé par le serveur.
+              Text(
+                'Total : ${formatPrice(order.total)}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17, color: AppColors.red),
+              ),
+            ],
           ),
           actions: [
             FilledButton(onPressed: () => Navigator.pop(ctx), child: Text(isMobileMoney(order.paymentMethod) ? 'Payer maintenant' : 'Suivre ma commande')),
@@ -169,7 +216,23 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
             const SizedBox(height: 20),
             if (_mode == 'delivery') ...[
-              const _Label('Adresse de livraison'),
+              Row(
+                children: [
+                  const Expanded(child: _Label('Adresse de livraison')),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: TextButton.icon(
+                      onPressed: _pickSavedAddress,
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.bookmark_rounded, size: 18),
+                      label: const Text('Mes adresses'),
+                    ),
+                  ),
+                ],
+              ),
               TextFormField(
                 controller: _address,
                 maxLines: 2,
@@ -199,7 +262,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         Expanded(
                           child: Text(
                             _location != null
-                                ? '${_location!.lat.toStringAsFixed(4)}, ${_location!.lng.toStringAsFixed(4)}'
+                                ? [
+                                    if ((_location!.address ?? '').trim().isNotEmpty) _location!.address!.trim(),
+                                    '${_location!.lat.toStringAsFixed(4)}, ${_location!.lng.toStringAsFixed(4)}',
+                                  ].join('\n')
                                 : 'Cliquer pour sélectionner votre position',
                             style: TextStyle(
                               color: _location != null ? AppColors.green : AppColors.muted,
@@ -261,9 +327,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               Padding(
                 padding: const EdgeInsets.only(top: 8, left: 4),
                 child: Text(
-                  'Après validation, vous serez redirigé vers la page de paiement sécurisée (KADEV PAY). '
+                  '${_settings?.paymentProvider == 'kadev' ? 'Après validation, vous serez redirigé vers la page de paiement sécurisée (KADEV PAY). ' : 'Après validation, vous recevrez une demande de paiement sur votre téléphone : confirmez-la avec votre code PIN. '}'
                   "Des frais de ${formatPercent(_settings?.paymentFeePercent ?? 2)} % s'ajoutent au total.",
-                  style: const TextStyle(color: AppColors.muted, fontSize: 12.5),
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5),
                 ),
               ),
             const SizedBox(height: 20),
@@ -288,7 +354,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     const Divider(height: 20),
                     _TotalRow('Sous-total', cart.subtotal),
                     if (_mode == 'delivery') _TotalRow('Livraison', deliveryFee),
-                    if (_payment != 'cash' && paymentFee > 0) _TotalRow('Frais moyen paiement', paymentFee),
+                    if (_payment != 'cash' && paymentFee > 0)
+                      _TotalRow('Frais mobile money (${formatPercent(_settings?.paymentFeePercent ?? 2)} %)', paymentFee),
                     const SizedBox(height: 6),
                     _TotalRow('Total', cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0), bold: true),
                   ],

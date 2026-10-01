@@ -13,8 +13,19 @@ class AppUser {
   final String? email;
   final String role;
   final String? address;
+  final String? avatarUrl; // chemin relatif (/uploads/...) : passer par resolveImageUrl
+  final String? momoPhone; // numéro mobile money préféré, pré-rempli au paiement
 
-  AppUser({required this.id, required this.name, required this.phone, this.email, required this.role, this.address});
+  AppUser({
+    required this.id,
+    required this.name,
+    required this.phone,
+    this.email,
+    required this.role,
+    this.address,
+    this.avatarUrl,
+    this.momoPhone,
+  });
 
   bool get isAdmin => role == 'admin';
 
@@ -25,6 +36,71 @@ class AppUser {
         email: j['email'],
         role: j['role'] ?? 'customer',
         address: j['address'],
+        avatarUrl: j['avatar_url'],
+        momoPhone: j['momo_phone'],
+      );
+}
+
+/// Adresse enregistrée par le client (Maison, Bureau...), réutilisable à la commande.
+class SavedAddress {
+  final int id;
+  final String label;
+  final String address;
+  final double? lat;
+  final double? lng;
+
+  SavedAddress({required this.id, required this.label, required this.address, this.lat, this.lng});
+
+  bool get hasLocation => lat != null && lng != null;
+
+  factory SavedAddress.fromJson(Map<String, dynamic> j) => SavedAddress(
+        id: _int(j['id']),
+        label: j['label'] ?? '',
+        address: j['address'] ?? '',
+        lat: (j['lat'] as num?)?.toDouble(),
+        lng: (j['lng'] as num?)?.toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {'label': label, 'address': address, 'lat': lat, 'lng': lng};
+}
+
+/// Tentative de paiement mobile money (push USSD : le client tape son code PIN sur son téléphone).
+class PaymentAttempt {
+  final int id;
+  final String status; // pending, paid, failed, expired, rejected
+  final String provider; // simulation, paygate, kadev...
+  final String operator; // flooz, mixx
+  final int amount;
+  final String? phone;
+  final String? message; // explication lisible (refus, montant incorrect...)
+  final bool simulated;
+  final DateTime? expiresAt;
+
+  PaymentAttempt({
+    required this.id,
+    required this.status,
+    required this.provider,
+    required this.operator,
+    required this.amount,
+    this.phone,
+    this.message,
+    this.simulated = false,
+    this.expiresAt,
+  });
+
+  bool get isPending => status == 'pending';
+  bool get isPaid => status == 'paid';
+
+  factory PaymentAttempt.fromJson(Map<String, dynamic> j) => PaymentAttempt(
+        id: _int(j['id']),
+        status: j['status'] ?? 'pending',
+        provider: j['provider'] ?? '',
+        operator: j['operator'] ?? '',
+        amount: _int(j['amount']),
+        phone: j['phone'],
+        message: j['message'],
+        simulated: j['simulated'] == true,
+        expiresAt: j['expires_at'] == null ? null : _parseDate(j['expires_at']),
       );
 }
 
@@ -116,7 +192,7 @@ class Order {
   final int deliveryFee;
   final int paymentFee;
   final int total;
-  final String paymentStatus; // 'unpaid', 'pending', 'paid', 'failed'
+  final String paymentStatus; // unpaid, pending, paid, failed, expired, refunded
   final String? paymentReference;
   final double? deliveryLat;
   final double? deliveryLng;
@@ -154,8 +230,13 @@ class Order {
 
   bool get isDelivery => mode == 'delivery';
   bool get isFinished => status == 'delivered' || status == 'cancelled';
-  bool get needsPayment => paymentStatus == 'pending' || paymentStatus == 'failed';
+  bool get isCancelled => status == 'cancelled';
+  bool get needsPayment => paymentStatus == 'pending' || paymentFailed;
   bool get isPaid => paymentStatus == 'paid';
+  bool get isRefunded => paymentStatus == 'refunded';
+
+  /// Dernière tentative mobile money refusée, abandonnée ou expirée.
+  bool get paymentFailed => paymentStatus == 'failed' || paymentStatus == 'expired';
   int get itemCount => items.fold(0, (s, i) => s + i.quantity);
   bool get hasLocation => deliveryLat != null && deliveryLng != null;
 
@@ -193,6 +274,9 @@ class AppSettings {
   final String restaurantAddress;
   final double paymentFeePercent;
   final String paymentMode; // 'test' ou 'live'
+  final String paymentProvider; // simulation, paygate, kadev...
+  final int maxQuantityPerItem;
+  final int momoUnpaidCancelMinutes; // annulation auto d'une commande mobile money non payée
 
   AppSettings({
     required this.deliveryFee,
@@ -202,6 +286,9 @@ class AppSettings {
     required this.restaurantAddress,
     this.paymentFeePercent = 2,
     this.paymentMode = 'test',
+    this.paymentProvider = 'simulation',
+    this.maxQuantityPerItem = 999,
+    this.momoUnpaidCancelMinutes = 30,
   });
 
   factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
@@ -212,6 +299,10 @@ class AppSettings {
         restaurantAddress: j['restaurant_address'] ?? '',
         paymentFeePercent: (j['payment_fee_percent'] as num?)?.toDouble() ?? 2,
         paymentMode: j['payment_mode'] ?? 'test',
+        paymentProvider: j['payment_provider'] ?? 'simulation',
+        maxQuantityPerItem: j['max_quantity_per_item'] == null ? 999 : _int(j['max_quantity_per_item']),
+        momoUnpaidCancelMinutes:
+            j['momo_unpaid_cancel_minutes'] == null ? 30 : _int(j['momo_unpaid_cancel_minutes']),
       );
 
   Map<String, dynamic> toJson() => {
@@ -222,6 +313,7 @@ class AppSettings {
         'restaurant_address': restaurantAddress,
         'payment_fee_percent': paymentFeePercent,
         'payment_mode': paymentMode,
+        'momo_unpaid_cancel_minutes': momoUnpaidCancelMinutes,
       };
 }
 

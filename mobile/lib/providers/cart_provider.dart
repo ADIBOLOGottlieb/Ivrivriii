@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../models.dart';
+import '../utils/format.dart' show maxQuantityPerItem;
 
 class CartLine {
   final Product product;
@@ -21,11 +22,12 @@ class CartProvider extends ChangeNotifier {
   int quantityOf(int productId) => _lines[productId]?.quantity ?? 0;
 
   void add(Product p, [int qty = 1]) {
+    if (qty <= 0) return;
     final line = _lines[p.id];
     if (line == null) {
-      _lines[p.id] = CartLine(p, qty);
+      _lines[p.id] = CartLine(p, qty.clamp(1, maxQuantityPerItem));
     } else {
-      line.quantity = (line.quantity + qty).clamp(1, 50);
+      line.quantity = (line.quantity + qty).clamp(1, maxQuantityPerItem);
     }
     notifyListeners();
   }
@@ -34,7 +36,7 @@ class CartProvider extends ChangeNotifier {
     if (qty <= 0) {
       _lines.remove(productId);
     } else if (_lines[productId] != null) {
-      _lines[productId]!.quantity = qty.clamp(1, 50);
+      _lines[productId]!.quantity = qty.clamp(1, maxQuantityPerItem);
     }
     notifyListeners();
   }

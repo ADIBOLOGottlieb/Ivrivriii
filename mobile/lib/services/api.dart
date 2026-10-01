@@ -488,7 +488,50 @@ class Api {
     return Order.fromJson(await post('/orders/$id/pay'));
   }
 
+  // ---------- Paiement mobile money (push USSD, code PIN saisi sur le téléphone) ----------
+  // Jamais de cache ; les POST ne sont jamais rejoués (cf. _send).
+
+  (Order, PaymentAttempt?) _orderPayment(dynamic r) {
+    final m = r as Map<String, dynamic>;
+    final p = m['payment'];
+    return (
+      Order.fromJson(m['order'] as Map<String, dynamic>),
+      p is Map<String, dynamic> ? PaymentAttempt.fromJson(p) : null,
+    );
+  }
+
+  /// Envoie la demande de paiement sur le téléphone [phone] (montant = total recalculé serveur).
+  Future<(Order, PaymentAttempt?)> startPayment(int orderId, String phone) async {
+    _log('Starting payment for order $orderId');
+    return _orderPayment(await post('/orders/$orderId/payments', {'phone': phone}));
+  }
+
+  /// Tentative de paiement en cours (le serveur revérifie auprès du prestataire).
+  Future<(Order, PaymentAttempt?)> currentPayment(int orderId) async {
+    return _orderPayment(await get('/orders/$orderId/payments/current'));
+  }
+
+  /// Abandonne la tentative en cours (« Paiement non abouti »).
+  Future<(Order, PaymentAttempt?)> abandonPayment(int orderId) async {
+    _log('Abandoning payment for order $orderId');
+    return _orderPayment(await post('/orders/$orderId/payments/current/abandon'));
+  }
+
+  /// Mode simulation uniquement : simule la saisie du code PIN ([result] = 'paid' ou 'failed').
+  Future<(Order, PaymentAttempt?)> simulatePayment(int orderId, String result) async {
+    _log('Simulating payment $result for order $orderId');
+    return _orderPayment(await post('/orders/$orderId/payments/current/simulate', {'result': result}));
+  }
+
   // ---------- Admin ----------
+
+  /// Rembourse une commande payée puis annulée. [reference] obligatoire si le remboursement est manuel.
+  Future<Order> refundOrder(int orderId, {String? reference}) async {
+    _log('Refunding order $orderId');
+    _cache.remove('/admin/orders');
+    final r = (reference ?? '').trim();
+    return Order.fromJson(await post('/admin/orders/$orderId/refund', {if (r.isNotEmpty) 'reference': r}));
+  }
 
   /// Fetch admin statistics (not cached - always fresh)
   Future<AdminStats> stats() async {

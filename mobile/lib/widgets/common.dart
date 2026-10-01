@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
@@ -122,47 +123,168 @@ class StatusChip extends StatelessWidget {
   }
 }
 
+/// Sélecteur de quantité − / + . Un appui long sur le chiffre ouvre une saisie au clavier.
 class QuantityStepper extends StatelessWidget {
   final int value;
   final ValueChanged<int> onChanged;
   final int min;
+  final int max;
   final bool compact;
 
-  const QuantityStepper({super.key, required this.value, required this.onChanged, this.min = 0, this.compact = false});
+  const QuantityStepper({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.min = 0,
+    this.max = maxQuantityPerItem,
+    this.compact = false,
+  });
+
+  Future<void> _editValue(BuildContext context) async {
+    final v = await showQuantityDialog(context, initial: value, min: min, max: max);
+    if (v != null && v != value) onChanged(v);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final size = compact ? 30.0 : 40.0;
     Widget btn(IconData icon, VoidCallback? onTap) => Material(
-          color: onTap == null ? Colors.grey.shade200 : AppColors.red,
+          color: onTap == null ? scheme.surfaceContainerHighest : AppColors.red,
           shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: onTap,
-            child: SizedBox(width: size, height: size, child: Icon(icon, color: Colors.white, size: size * 0.55)),
+            child: SizedBox(
+              width: size,
+              height: size,
+              child: Icon(icon, color: onTap == null ? scheme.onSurfaceVariant : Colors.white, size: size * 0.55),
+            ),
           ),
         );
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         btn(Icons.remove_rounded, value > min ? () => onChanged(value - 1) : null),
-        SizedBox(
-          width: compact ? 32 : 44,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            transitionBuilder: (child, anim) => ScaleTransition(
-              scale: anim,
-              child: FadeTransition(opacity: anim, child: child),
-            ),
-            child: Text(
-              '$value',
-              key: ValueKey(value),
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: compact ? 15 : 18, fontWeight: FontWeight.w800),
+        Semantics(
+          button: true,
+          hint: 'Appui long pour saisir la quantité',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onLongPress: () => _editValue(context),
+            // Largeur minimale, mais le chiffre peut s'élargir (jusqu'à 3 chiffres).
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: compact ? 32 : 44, minHeight: size),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Center(
+                  widthFactor: 1,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    transitionBuilder: (child, anim) => ScaleTransition(
+                      scale: anim,
+                      child: FadeTransition(opacity: anim, child: child),
+                    ),
+                    child: Text(
+                      '$value',
+                      key: ValueKey(value),
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(fontSize: compact ? 15 : 18, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
-        btn(Icons.add_rounded, value < 50 ? () => onChanged(value + 1) : null),
+        btn(Icons.add_rounded, value < max ? () => onChanged(value + 1) : null),
+      ],
+    );
+  }
+}
+
+/// Saisie d'une quantité au clavier numérique. Renvoie null si l'utilisateur annule.
+/// Si [min] vaut 0, la valeur 0 retire l'article.
+Future<int?> showQuantityDialog(BuildContext context,
+    {required int initial, int min = 1, int max = maxQuantityPerItem}) {
+  return showDialog<int>(
+    context: context,
+    builder: (_) => _QuantityDialog(initial: initial, min: min, max: max),
+  );
+}
+
+class _QuantityDialog extends StatefulWidget {
+  final int initial;
+  final int min;
+  final int max;
+  const _QuantityDialog({required this.initial, required this.min, required this.max});
+
+  @override
+  State<_QuantityDialog> createState() => _QuantityDialogState();
+}
+
+class _QuantityDialogState extends State<_QuantityDialog> {
+  late final TextEditingController _ctrl;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: '${widget.initial}');
+    _ctrl.selection = TextSelection(baseOffset: 0, extentOffset: _ctrl.text.length);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final v = parseQuantity(_ctrl.text, min: widget.min, max: widget.max);
+    if (v == null) {
+      setState(() => _error = 'Entrez un nombre entre ${widget.min} et ${widget.max}');
+      return;
+    }
+    Navigator.pop(context, v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final digits = '${widget.max}'.length;
+    return AlertDialog(
+      title: const Text('Quantité'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        textInputAction: TextInputAction.done,
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(digits),
+        ],
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+        decoration: InputDecoration(
+          helperText: widget.min == 0
+              ? '0 pour retirer l\'article • maximum ${widget.max}'
+              : 'De ${widget.min} à ${widget.max}',
+          errorText: _error,
+        ),
+        onChanged: (_) {
+          if (_error != null) setState(() => _error = null);
+        },
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Annuler')),
+        FilledButton(
+          style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+          onPressed: _submit,
+          child: const Text('Valider'),
+        ),
       ],
     );
   }

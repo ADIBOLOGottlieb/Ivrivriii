@@ -22,6 +22,7 @@ class OrderCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final summary = order.items.map((i) => '${i.quantity}× ${i.name}').join(', ');
+    final badge = _paymentBadge(context);
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -52,12 +53,14 @@ class OrderCard extends StatelessWidget {
               const SizedBox(height: 6),
               Text(summary,
                   maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.muted)),
+              if (badge != null) ...[const SizedBox(height: 8), badge],
               const SizedBox(height: 10),
               Row(
                 children: [
-                  Icon(Icons.schedule_rounded, size: 15, color: Colors.grey.shade500),
+                  Icon(Icons.schedule_rounded, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
                   const SizedBox(width: 4),
-                  Text(timeAgo(order.createdAt), style: TextStyle(color: Colors.grey.shade600, fontSize: 12.5)),
+                  Text(timeAgo(order.createdAt),
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5)),
                   const Spacer(),
                   Price(order.total, size: 15),
                 ],
@@ -67,6 +70,38 @@ class OrderCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  /// Petit badge de paiement mobile money (en attente, non abouti, à rembourser, remboursé).
+  Widget? _paymentBadge(BuildContext context) {
+    if (!isMobileMoney(order.paymentMethod)) return null;
+    final String label;
+    final Color color;
+    if (order.isRefunded) {
+      label = paymentStatusLabel('refunded');
+      color = Theme.of(context).colorScheme.tertiary;
+    } else if (order.isPaid) {
+      if (!order.isCancelled) return null;
+      label = 'Payée • remboursement à faire';
+      color = const Color(0xFFE08A00);
+    } else if (order.isCancelled) {
+      return null;
+    } else if (order.paymentFailed) {
+      label = paymentStatusLabel(order.paymentStatus);
+      color = AppColors.darkRed;
+    } else {
+      label = paymentStatusLabel('pending');
+      color = const Color(0xFFE08A00);
+    }
+    return Row(
+      children: [
+        Icon(Icons.account_balance_wallet_rounded, size: 15, color: color),
+        const SizedBox(width: 5),
+        Flexible(
+          child: Text(label, style: TextStyle(color: color, fontSize: 12.5, fontWeight: FontWeight.w700)),
+        ),
+      ],
     );
   }
 }

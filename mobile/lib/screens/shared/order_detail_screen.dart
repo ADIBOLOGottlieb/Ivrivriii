@@ -8,9 +8,11 @@ import '../../models.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
+import '../../services/order_events.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
+import '../client/payment_screen.dart';
 
 /// Détail et suivi d'une commande. En mode [admin], affiche les infos client
 /// et les actions de changement de statut.
@@ -38,6 +40,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Order? _order;
   Object? _error;
   bool _busy = false;
+  int _gen = 0; // incrémenté à chaque action : invalide les lectures en cours
   late SmartPoller _poller;
   // Le client revient du navigateur après avoir payé : on rafraîchit aussitôt.
   late final AppLifecycleListener _lifecycle;
@@ -84,18 +87,22 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 
   Future<void> _load() async {
+    // Une lecture lancée avant une action (annulation, paiement...) ne doit pas écraser son résultat.
+    final gen = _gen;
     try {
       final o = await Api.instance.order(widget.orderId);
-      if (!mounted) return;
-      setState(() {
-        _order = o;
-        _error = null;
-        // Update poller with new status for adaptive interval adjustment
-        _poller.updateStatus(o.status);
-      });
+      if (!mounted || gen != _gen) return;
+      _setOrder(o);
+      setState(() => _error = null);
     } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted && gen == _gen) setState(() => _error = e);
     }
+  }
+
+  /// Affiche immédiatement la commande à jour et adapte le rythme du suivi.
+  void _setOrder(Order o) {
+    setState(() => _order = o);
+    _poller.updateStatus(o.status);
   }
 
   Future<void> _run(Future<Order> Function() action, String success) async {
@@ -103,7 +110,9 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     try {
       final o = await action();
       if (!mounted) return;
-      setState(() => _order = o);
+      _gen++;
+      _setOrder(o);
+      notifyOrdersChanged();
       showMessage(context, success);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
@@ -112,8 +121,39 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     }
   }
 
-  /// Ouvre la page de paiement sécurisée KADEV PAY dans le navigateur.
+  /// Paiement mobile money : demande envoyée sur le téléphone du client (code PIN),
+  /// ou page KADEV PAY dans le navigateur si c'est le prestataire configuré.
   Future<void> _pay() async {
+    final o = _order;
+    if (o == null || _busy) return;
+    setState(() => _busy = true);
+    AppSettings? settings;
+    try {
+      settings = await Api.instance.settings();
+    } catch (_) {
+      // Réglages indisponibles : on utilise l'écran de paiement intégré.
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (settings?.paymentProvider == 'kadev') {
+      await _payInBrowser();
+      return;
+    }
+    final updated = await Navigator.push<Order>(
+      context,
+      MaterialPageRoute(builder: (_) => PaymentScreen(order: _order ?? o)),
+    );
+    if (!mounted) return;
+    if (updated != null) {
+      _gen++;
+      _setOrder(updated);
+    }
+    notifyOrdersChanged();
+    _load();
+  }
+
+  /// Ouvre la page de paiement sécurisée KADEV PAY dans le navigateur.
+  Future<void> _payInBrowser() async {
     var o = _order;
     if (o == null || _busy) return;
     setState(() => _busy = true);
@@ -149,6 +189,66 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
+  /// Admin : remboursement d'une commande payée puis annulée.
+  Future<void> _refund() async {
+    final ctrl = TextEditingController();
+    final reference = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rembourser le client ?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Montant payé : ${formatPrice(_order?.total ?? 0)}.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Référence du remboursement',
+                helperText: 'Obligatoire si vous avez remboursé à la main (transfert Flooz / Mixx).',
+                helperMaxLines: 3,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          FilledButton(
+            style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Rembourser'),
+          ),
+        ],
+      ),
+    );
+    // Libéré après la fermeture complète de la boîte de dialogue.
+    WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
+    if (reference == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final o = await Api.instance.refundOrder(widget.orderId, reference: reference);
+      if (!mounted) return;
+      _gen++;
+      _setOrder(o);
+      notifyOrdersChanged();
+      showMessage(context, 'Remboursement enregistré');
+    } catch (e) {
+      if (!mounted) return;
+      final needsRef = reference.isEmpty && e is ApiException && e.isClientError;
+      showMessage(
+        context,
+        needsRef
+            ? '$e\nIndiquez la référence du remboursement effectué (transfert mobile money).'
+            : e,
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final o = _order;
@@ -164,11 +264,17 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 padding: const EdgeInsets.all(20),
                 children: [
                   FadeSlideIn(child: _StatusHeader(order: o)),
-                  if (isMobileMoney(o.paymentMethod) && o.status != 'cancelled') ...[
+                  if (isMobileMoney(o.paymentMethod) && (!o.isCancelled || o.isPaid || o.isRefunded)) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
                       delay: const Duration(milliseconds: 40),
-                      child: _PaymentCard(order: o, admin: widget.admin, busy: _busy, onPay: _pay),
+                      child: _PaymentCard(
+                        order: o,
+                        admin: widget.admin,
+                        busy: _busy,
+                        onPay: _pay,
+                        onCancel: _cancel,
+                      ),
                     ),
                   ],
                   const SizedBox(height: 16),
@@ -235,7 +341,15 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           child: const Text('Annuler la commande'),
         ));
       }
-    } else if (o.status == 'pending' && !o.isPaid) {
+      if (o.isCancelled && o.isPaid) {
+        buttons.add(FilledButton.icon(
+          onPressed: _busy ? null : _refund,
+          icon: const Icon(Icons.currency_exchange_rounded),
+          label: Text('Rembourser ${formatPrice(o.total)}'),
+        ));
+      }
+    } else if (o.status == 'pending' && !o.isPaid && !(isMobileMoney(o.paymentMethod) && o.paymentFailed)) {
+      // (paiement non abouti : le bouton « Annuler la commande » est dans la carte de paiement)
       buttons.add(OutlinedButton(
         onPressed: _busy ? null : _cancel,
         style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
@@ -521,29 +635,68 @@ class _ItemsCard extends StatelessWidget {
       );
 }
 
-/// État du paiement mobile money (Flooz / Mixx via KADEV PAY).
+/// État du paiement mobile money (Flooz / Mixx).
 class _PaymentCard extends StatelessWidget {
   final Order order;
   final bool admin;
   final bool busy;
   final VoidCallback onPay;
-  const _PaymentCard({required this.order, required this.admin, required this.busy, required this.onPay});
+  final VoidCallback onCancel;
+  const _PaymentCard({
+    required this.order,
+    required this.admin,
+    required this.busy,
+    required this.onPay,
+    required this.onCancel,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final paid = order.isPaid;
-    final failed = order.paymentStatus == 'failed';
-    final color = paid ? AppColors.green : (failed ? AppColors.darkRed : const Color(0xFFE08A00));
-    final title = paid ? 'Paiement reçu' : (failed ? 'Paiement échoué' : 'En attente de paiement');
+    final refunded = order.isRefunded;
+    final failed = order.paymentFailed;
+    final Color color;
+    final String title;
     final String message;
-    if (paid) {
+    final IconData icon;
+    if (refunded) {
+      color = scheme.tertiary;
+      icon = Icons.currency_exchange_rounded;
+      title = paymentStatusLabel('refunded');
+      message = '${formatPrice(order.total)} remboursés'
+          '${order.paymentReference != null ? ' • Réf. ${order.paymentReference}' : ''}';
+    } else if (paid && order.isCancelled) {
+      color = const Color(0xFFE08A00);
+      icon = Icons.currency_exchange_rounded;
+      title = admin ? 'Payée puis annulée : à rembourser' : 'Remboursement en cours';
+      message = admin
+          ? 'Le client a payé ${formatPrice(order.total)} (réf. ${order.paymentReference ?? '-'}). '
+              'Remboursez-le puis enregistrez le remboursement.'
+          : 'Le restaurant va vous rembourser ${formatPrice(order.total)}.';
+    } else if (paid) {
+      color = AppColors.green;
+      icon = Icons.verified_rounded;
+      title = 'Paiement reçu';
       message = 'Réf. ${order.paymentReference ?? '-'}';
-    } else if (admin) {
-      message = 'La commande pourra être lancée dès que le client aura payé.';
+    } else if (failed) {
+      color = AppColors.darkRed;
+      icon = Icons.error_outline_rounded;
+      title = 'Paiement non abouti';
+      message = admin
+          ? "Le paiement du client n'a pas abouti. La commande ne peut pas être lancée."
+          : "Le paiement de ${formatPrice(order.total)} n'a pas été confirmé. "
+              'Réessayez ou annulez la commande.';
     } else {
-      message = 'Payez ${formatPrice(order.total)} par ${paymentLabel(order.paymentMethod)} '
-          'pour que le restaurant lance votre commande.';
+      color = const Color(0xFFE08A00);
+      icon = Icons.account_balance_wallet_rounded;
+      title = 'En attente de paiement';
+      message = admin
+          ? 'La commande pourra être lancée dès que le client aura payé.'
+          : 'Payez ${formatPrice(order.total)} par ${paymentLabel(order.paymentMethod)} '
+              'pour que le restaurant lance votre commande.';
     }
+    final canPay = !admin && !paid && !refunded && !order.isCancelled;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -552,7 +705,7 @@ class _PaymentCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(paid ? Icons.verified_rounded : Icons.account_balance_wallet_rounded, color: color),
+                Icon(icon, color: color),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(title, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: color)),
@@ -560,14 +713,22 @@ class _PaymentCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 6),
-            Text(message, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.35)),
-            if (!paid && !admin) ...[
+            Text(message, style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35)),
+            if (canPay) ...[
               const SizedBox(height: 14),
               FilledButton.icon(
                 onPressed: busy ? null : onPay,
-                icon: const Icon(Icons.lock_rounded),
-                label: Text(failed ? 'Réessayer le paiement' : 'Payer maintenant'),
+                icon: Icon(failed ? Icons.refresh_rounded : Icons.lock_rounded),
+                label: Text(failed ? 'Réessayer' : 'Payer maintenant'),
               ),
+              if (failed && order.status == 'pending') ...[
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  onPressed: busy ? null : onCancel,
+                  style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
+                  child: const Text('Annuler la commande'),
+                ),
+              ],
             ],
           ],
         ),

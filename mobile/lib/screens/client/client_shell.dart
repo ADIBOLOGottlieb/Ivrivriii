@@ -20,11 +20,20 @@ class ClientShell extends StatefulWidget {
 class ClientShellState extends State<ClientShell> {
   static const menuTab = 0, cartTab = 1, ordersTab = 2, profileTab = 3;
   int _index = 0;
+  int _ordersRefresh = 0; // incrémenté à chaque appui sur « Commandes »
 
   void goTo(int index) {
     // Ferme le clavier (ex : recherche) pour qu'il ne masque pas la barre d'onglets.
     FocusManager.instance.primaryFocus?.unfocus();
-    if (index != _index) setState(() => _index = index);
+    if (index == ordersTab) {
+      // Même si l'onglet est déjà affiché : on recharge la liste.
+      setState(() {
+        _index = index;
+        _ordersRefresh++;
+      });
+    } else if (index != _index) {
+      setState(() => _index = index);
+    }
   }
 
   @override
@@ -36,7 +45,7 @@ class ClientShellState extends State<ClientShell> {
         children: [
           const HomeScreen(),
           const CartScreen(),
-          OrdersScreen(active: _index == ordersTab),
+          OrdersScreen(active: _index == ordersTab, refreshToken: _ordersRefresh),
           const ProfileScreen(),
         ],
       ),

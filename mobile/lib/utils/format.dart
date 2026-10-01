@@ -12,6 +12,16 @@ String formatPrice(int amount) {
   return '${amount < 0 ? '-' : ''}$buf FCFA';
 }
 
+/// Quantité maximale d'un même article dans le panier (même valeur que le serveur).
+const maxQuantityPerItem = 999;
+
+/// Lit une quantité saisie au clavier : renvoie null si vide, non numérique ou hors [min]..[max].
+int? parseQuantity(String text, {int min = 1, int max = maxQuantityPerItem}) {
+  final v = int.tryParse(text.trim());
+  if (v == null || v < min || v > max) return null;
+  return v;
+}
+
 String _two(int n) => n.toString().padLeft(2, '0');
 
 String formatDateTime(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year} à ${_two(d.hour)}h${_two(d.minute)}';
@@ -33,7 +43,7 @@ const paymentMethods = <String, String>{
   'mixx': 'Mixx by Yas',
 };
 
-/// Moyens payés en ligne via KADEV PAY (frais de paiement à la charge du client).
+/// Moyens payés en ligne par mobile money (frais de paiement à la charge du client).
 bool isMobileMoney(String method) => method == 'flooz' || method == 'mixx';
 
 /// Frais de paiement mobile money, arrondis à l'unité supérieure.
@@ -52,6 +62,30 @@ const _legacyPaymentLabels = <String, String>{
   'moov_money': 'Moov Money',
   'wave': 'Wave',
 };
+
+/// Libellé lisible du statut de paiement d'une commande.
+String paymentStatusLabel(String status) {
+  switch (status) {
+    case 'unpaid':
+      return 'À régler à la remise';
+    case 'pending':
+      return 'En attente de paiement';
+    case 'paid':
+      return 'Payée';
+    case 'failed':
+    case 'expired':
+      return 'Paiement non abouti';
+    case 'refunded':
+      return 'Remboursé';
+  }
+  return status;
+}
+
+/// Compte à rebours « m:ss » (jamais négatif).
+String formatCountdown(Duration d) {
+  final s = d.isNegative ? 0 : d.inSeconds;
+  return '${s ~/ 60}:${_two(s % 60)}';
+}
 
 String paymentLabel(String method) => paymentMethods[method] ?? _legacyPaymentLabels[method] ?? method;
 
