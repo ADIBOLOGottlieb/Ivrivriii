@@ -3,12 +3,16 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../models.dart';
+import '../../models_admin.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/admin_api.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import '../client/profile_screen.dart';
+import 'collections_screen.dart';
+import 'payments_review_screen.dart';
 
 class AdminMoreScreen extends StatelessWidget {
   const AdminMoreScreen({super.key});
@@ -51,6 +55,36 @@ class AdminMoreScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.price_check_rounded, color: AppColors.red),
+                  title: const Text('Paiements à vérifier'),
+                  subtitle: const Text('Mobile money en attente ou avec un écart'),
+                  trailing: ValueListenableBuilder<int>(
+                    valueListenable: paymentReviewCount,
+                    builder: (_, n, _) => Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (n > 0) Badge(label: Text('$n'), backgroundColor: AppColors.red),
+                        const Icon(Icons.chevron_right_rounded),
+                      ],
+                    ),
+                  ),
+                  onTap: () => open(const PaymentsReviewScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.account_balance_wallet_rounded, color: AppColors.red),
+                  title: const Text('Encaissements'),
+                  subtitle: const Text('Totaux, frais, reversements, export CSV'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => open(const CollectionsScreen()),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           OutlinedButton.icon(
             style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
             onPressed: () async {
@@ -83,6 +117,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _min = TextEditingController();
   final _phone = TextEditingController();
   final _address = TextEditingController();
+  final _cancelMinutes = TextEditingController();
+  late final Future<MerchantInfo> _merchant = fetchMerchant();
+  AppSettings? _current; // réglages chargés : conserve les champs non modifiés ici
   bool _isOpen = true;
   bool _loaded = false;
   bool _saving = false;
@@ -96,7 +133,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    for (final c in [_fee, _min, _phone, _address]) {
+    for (final c in [_fee, _min, _phone, _address, _cancelMinutes]) {
       c.dispose();
     }
     super.dispose();
@@ -112,6 +149,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _phone.text = s.restaurantPhone;
         _address.text = s.restaurantAddress;
         _isOpen = s.isOpen;
+        _cancelMinutes.text = '${s.momoUnpaidCancelMinutes}';
+        _current = s;
         _loaded = true;
         _error = null;
       });
@@ -130,6 +169,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         isOpen: _isOpen,
         restaurantPhone: _phone.text.trim(),
         restaurantAddress: _address.text.trim(),
+        // Champs non modifiés ici : on renvoie les valeurs chargées pour ne pas les écraser
+        // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
+        paymentFeePercent: _current?.paymentFeePercent ?? 2,
+        paymentMode: _current?.paymentMode ?? 'test',
+        paymentProvider: _current?.paymentProvider ?? 'simulation',
+        maxQuantityPerItem: _current?.maxQuantityPerItem ?? 999,
+        momoUnpaidCancelMinutes: int.parse(_cancelMinutes.text.trim()),
       ));
       if (!mounted) return;
       showMessage(context, 'Paramètres enregistrés');
@@ -157,7 +203,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(20),
                 children: [
                   Card(
-                    color: _isOpen ? AppColors.green.withValues(alpha: 0.12) : Colors.grey.shade200,
+                    color: _isOpen
+                        ? AppColors.green.withValues(alpha: 0.12)
+                        : Theme.of(context).colorScheme.surfaceContainerHighest,
                     child: SwitchListTile(
                       value: _isOpen,
                       activeTrackColor: AppColors.green,
@@ -195,6 +243,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     maxLines: 2,
                     decoration: const InputDecoration(labelText: 'Adresse du restaurant'),
                   ),
+                  const SizedBox(height: 24),
+                  const Text('Paiement mobile money', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _cancelMinutes,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Annulation auto des commandes mobile money non payées',
+                      helperText: 'Délai en minutes, entre 5 et 1440 (24 h)',
+                      helperMaxLines: 2,
+                      suffixText: 'min',
+                    ),
+                    validator: (v) {
+                      final n = int.tryParse(v?.trim() ?? '');
+                      if (n == null || n < 5 || n > 1440) return 'Entre 5 et 1440 minutes';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  _MerchantCard(future: _merchant),
                   const SizedBox(height: 24),
                   FilledButton(
                     onPressed: _saving ? null : _save,
@@ -288,6 +356,99 @@ class _CustomersScreenState extends State<CustomersScreen> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// Compte marchand mobile money, en lecture seule (numéros masqués côté serveur).
+class _MerchantCard extends StatelessWidget {
+  final Future<MerchantInfo> future;
+  const _MerchantCard({required this.future});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: FutureBuilder<MerchantInfo>(
+          future: future,
+          builder: (context, snap) {
+            final header = Row(
+              children: [
+                const Icon(Icons.store_mall_directory_rounded, color: AppColors.red),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text('Compte marchand',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: cs.onSurface)),
+                ),
+                Icon(Icons.lock_outline_rounded, size: 18, color: cs.onSurfaceVariant),
+              ],
+            );
+            if (snap.hasError) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  header,
+                  const SizedBox(height: 10),
+                  Text('Informations indisponibles : ${snap.error}', style: TextStyle(color: cs.error)),
+                ],
+              );
+            }
+            final m = snap.data;
+            if (m == null) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  header,
+                  const SizedBox(height: 16),
+                  const Center(child: CircularProgressIndicator()),
+                ],
+              );
+            }
+            Widget row(String label, String? value) => Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 110,
+                        child: Text(label, style: TextStyle(color: cs.onSurfaceVariant)),
+                      ),
+                      Expanded(
+                        child: Text(
+                          (value ?? '').isEmpty ? 'Non configuré' : value!,
+                          style: TextStyle(fontWeight: FontWeight.w700, color: cs.onSurface),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                header,
+                const SizedBox(height: 4),
+                row('Prestataire', providerLabel(m.provider)),
+                row('Nom affiché', m.displayName),
+                row('Flooz', m.flooz),
+                row('Mixx', m.mixx),
+                if (m.settlement.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text('Reversement', style: TextStyle(color: cs.onSurfaceVariant)),
+                  const SizedBox(height: 4),
+                  Text(m.settlement, style: TextStyle(color: cs.onSurface)),
+                ],
+                const SizedBox(height: 10),
+                Text(
+                  'Ces informations se modifient côté serveur (variables d\'environnement), pas depuis l\'application.',
+                  style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

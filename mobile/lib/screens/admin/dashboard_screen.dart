@@ -3,12 +3,14 @@ import 'package:provider/provider.dart';
 
 import '../../models.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/admin_api.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import 'admin_shell.dart';
+import 'payments_review_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final bool active;
@@ -92,6 +94,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ),
                   if (s.pending > 0) const SizedBox(height: 16),
+                  // Paiements mobile money à vérifier à la main (compteur mis à jour par AdminShell).
+                  ValueListenableBuilder<int>(
+                    valueListenable: paymentReviewCount,
+                    builder: (context, n, _) => n == 0
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: Card(
+                              color: Theme.of(context).colorScheme.errorContainer,
+                              child: ListTile(
+                                leading: Icon(Icons.price_check_rounded,
+                                    color: Theme.of(context).colorScheme.onErrorContainer),
+                                title: Text(
+                                  '$n paiement${n > 1 ? 's' : ''} à vérifier',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    color: Theme.of(context).colorScheme.onErrorContainer,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  'Mobile money en attente ou avec un écart',
+                                  style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+                                ),
+                                trailing: Icon(Icons.chevron_right_rounded,
+                                    color: Theme.of(context).colorScheme.onErrorContainer),
+                                onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => const PaymentsReviewScreen()),
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
                   GridView.count(
                     crossAxisCount: 2,
                     shrinkWrap: true,

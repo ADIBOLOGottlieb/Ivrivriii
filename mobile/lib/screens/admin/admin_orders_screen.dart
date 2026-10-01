@@ -6,7 +6,6 @@ import '../../models.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
-import '../../utils/pagination.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
@@ -114,7 +113,8 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
         }
         if (maxId != null && (_lastMaxId == null || maxId > _lastMaxId!)) _lastMaxId = maxId;
 
-        AdminShell.of(context)?.setPendingCount(pending.length);
+        // L'écran a pu être fermé pendant la requête.
+        if (mounted) AdminShell.of(context)?.setPendingCount(pending.length);
       } catch (_) {
         // Silently fail on pending count update - not critical
       }
