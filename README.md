@@ -1,9 +1,9 @@
 # 🐔 Ivrivrii Chicken — Application de commande en ligne
 
-Application mobile (Android / iOS) de commande pour le restaurant **Ivrivrii Chicken**, avec un espace **client** et un espace **administrateur** dans la même app. Le rôle du compte connecté détermine l'interface affichée.
+Application mobile (Android / iOS) de commande pour le restaurant **Ivrivrii Chicken** (Lomé, Togo), avec un espace **client** et un espace **administrateur** dans la même app. Le rôle du compte connecté détermine l'interface affichée.
 
 ```
-backend/   API Node.js (Express + SQLite intégré à Node) — port 4000
+backend/   API Node.js (Express + SQLite intégré à Node) — déployée sur Render
 mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jpg
 ```
 
@@ -11,20 +11,20 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 
 **Client**
 - Inscription et connexion par numéro de téléphone
-- Menu par catégories, recherche, section « Les plus demandés »
-- Fiche produit, panier (quantités, balayer pour supprimer)
-- Commande en livraison ou à emporter, adresse, note pour la cuisine
-- Paiement : espèces, T-Money (Togocom), Flooz (Moov Africa)
-- Suivi en temps réel (rafraîchi toutes les 15 s) avec étapes, annulation tant que la commande est en attente
-- Historique des commandes, profil, appel direct du restaurant
+- Menu par catégories, recherche toujours visible, section « Les plus demandés »
+- Panier (jusqu'à 999 par article, appui long sur la quantité pour la saisir), total estimé avec livraison et frais mobile money
+- Livraison : position sur la carte (recherche d'adresse, « Ma position », adresse retrouvée automatiquement) ou adresses enregistrées
+- Paiement : espèces, **Flooz** (Moov Africa) ou **Mixx by Yas** par **push USSD** : le client confirme avec son code PIN sur son téléphone (jamais dans l'app)
+- Suivi en temps réel, annulation tant que la commande est en attente, « Paiement non abouti » → Réessayer / Annuler
+- Profil : photo, statistiques, adresses, numéro mobile money préféré, mot de passe, thème clair / sombre / système, aide (appel, WhatsApp, FAQ), suppression du compte
 
 **Admin**
-- Tableau de bord : CA du jour, commandes, en cours, clients, graphique sur 7 jours, top ventes
-- Commandes : filtres, passage à l'étape suivante en un clic, annulation, appel du client, alerte « Nouvelle commande »
-- Menu : ajout, modification et suppression des produits ; photo prise avec l'appareil ou choisie dans la galerie ; rupture de stock en un clic ; mise en avant
-- Catégories : ajout, modification, suppression, icône
-- Paramètres : ouvert/fermé, frais de livraison, minimum de commande, téléphone et adresse
-- Liste des clients (nombre de commandes, total dépensé)
+- Tableau de bord, commandes (alerte « Nouvelle commande », notification « Paiement reçu »), menu, catégories, clients
+- **Paiements à vérifier** : validation manuelle (référence obligatoire, montant contrôlé) ou rejet
+- **Encaissements** : totaux par jour et opérateur (encaissé, frais, net, reversé), reversement par lot, export CSV
+- Remboursement d'une commande payée puis annulée
+- Paramètres : ouvert/fermé, livraison, minimum, frais de paiement, délai d'annulation des commandes mobile money non payées, compte marchand (numéros masqués)
+- Sécurité : journal d'audit de toutes les actions sur l'argent, alertes (pics, paiements en attente, écarts de rapprochement)
 
 ## 1. Lancer le backend
 
@@ -36,15 +36,27 @@ npm install
 npm start
 ```
 
-Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstration et un **compte admin** :
+Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstration et un compte admin (`0700000000` / `admin123`, ou `ADMIN_PHONE` / `ADMIN_PASSWORD`). Changez ce mot de passe tout de suite.
 
-| Téléphone    | Mot de passe |
-|--------------|--------------|
-| `0700000000` | `admin123`   |
+### Variables d'environnement
 
-⚠️ Changez ce mot de passe dès la première connexion (Plus → Mon compte administrateur). Vous pouvez aussi définir `ADMIN_PHONE` et `ADMIN_PASSWORD` avant le premier lancement.
+| Variable | Rôle |
+|---|---|
+| `PORT` | 4000 par défaut |
+| `JWT_SECRET` | **obligatoire en production** |
+| `DB_PATH` | chemin de la base SQLite |
+| `ADMIN_PHONE`, `ADMIN_PASSWORD` | compte admin créé au premier lancement |
+| `TRUST_PROXY` | `1` derrière Render (vraies IP pour l'anti-abus) |
+| `PAYMENT_PROVIDER` | `simulation` (défaut), `paygate` (recommandé au Togo), `kadev`, `direct` |
+| `PAYMENT_PROVIDER_FLOOZ`, `PAYMENT_PROVIDER_MIXX` | prestataire différent par opérateur (facultatif) |
+| `PAYGATE_AUTH_TOKEN` | clé API PayGate Global (**secret**) |
+| `MERCHANT_FLOOZ_NUMBER`, `MERCHANT_MIXX_NUMBER` | numéros marchands du restaurant (affichés masqués dans l'admin) |
+| `MERCHANT_DISPLAY_NAME` | nom affiché au client, « Ivrivrii Chicken » par défaut |
+| `PROVIDER_FEE_PERCENT` | commission de l'agrégateur, pour calculer le net à recevoir |
+| `KADEV_PUBLIC_KEY`, `KADEV_SECRET_KEY`, `KADEV_WEBHOOK_SECRET` | uniquement si `PAYMENT_PROVIDER=kadev` |
+| `PAYMENT_EXPIRY_SECONDS` | durée d'une demande de paiement (120 par défaut) |
 
-Variables d'environnement : `PORT` (4000 par défaut), `JWT_SECRET` (**obligatoire en production**), `DB_PATH`, `ADMIN_PHONE`, `ADMIN_PASSWORD`.
+Aucune clé secrète ni aucun numéro marchand n'est écrit dans le code ou dans l'APK : tout passe par ces variables (sur Render : *Environment*).
 
 ## 2. Lancer l'application mobile
 
@@ -59,30 +71,84 @@ flutter run
 flutter run --dart-define=API_URL=http://192.168.1.20:4000
 ```
 
-Pour produire l'APK : `flutter build apk --release --dart-define=API_URL=https://votre-serveur.com`
+APK : `flutter build apk --release --dart-define=API_URL=https://ivrivrii-api.onrender.com --dart-define=GOOGLE_MAPS_API_KEY=VOTRE_CLE`
 
-L'icône de l'app est générée à partir du logo (`dart run flutter_launcher_icons`).
+La CI GitHub (`.github/workflows/build-apk.yml`) analyse le code, lance les tests et produit l'APK à chaque push sur `main` qui touche `mobile/` (onglet **Actions** → *Build APK* → *Artifacts*).
 
-## Mise en production
+## 3. Carte Google (facultatif)
 
-- Hébergez le backend (VPS, Render, Railway…) derrière **HTTPS** et définissez `JWT_SECRET`.
-- Retirez ensuite `android:usesCleartextTraffic="true"` (AndroidManifest) et `NSAllowsArbitraryLoads` (Info.plist). Ces options autorisent le HTTP local pendant le développement.
-- Sauvegardez régulièrement `ivrivrii.db` et le dossier `uploads/`.
-- Les paiements mobiles sont enregistrés comme moyen de paiement choisi, et le restaurant confirme par téléphone. Le paiement automatique (CinetPay, PayDunya…) se branche au moment de la création de la commande (`POST /api/orders`).
+Sans clé, l'app utilise automatiquement **OpenStreetMap**. Avec une clé, elle affiche les tuiles officielles Google (en français, région Togo), la recherche d'adresse Google et l'adresse du point choisi.
+
+1. Dans Google Cloud, créez une clé et activez **Map Tiles API**, **Places API (New)** et **Geocoding API**.
+2. **Restreignez la clé** (*Identifiants* → la clé) :
+   - *Restrictions d'application* → **Applications Android** : nom du package `com.ivrivrii.ivrivrii_chicken` + empreinte **SHA-1** du certificat qui signe l'APK (`keytool -list -v -keystore <votre.jks>`).
+   - *Restrictions d'API* : uniquement les trois API ci-dessus.
+3. Sur GitHub (*Settings* → *Secrets and variables* → *Actions*), ajoutez les secrets `GOOGLE_MAPS_API_KEY` et `GOOGLE_ANDROID_CERT_SHA1` (l'empreinte, envoyée par l'app avec ses requêtes Google).
+
+⚠️ Pour que la restriction Android fonctionne, l'APK doit toujours être signé **avec la même clé**. Aujourd'hui la CI signe avec une clé de débogage temporaire, différente à chaque build : créez une clé de signature (`keytool -genkey ...`), stockez-la en secret GitHub et configurez `android/key.properties` dans la CI avant de restreindre la clé Google. La clé Google Maps est la seule clé présente dans l'APK : c'est pour cela qu'elle doit être restreinte.
+
+## 4. Paiements Flooz / Mixx by Yas
+
+### Parcours
+1. Le client commande : le **serveur** calcule le total (sous-total + livraison + frais mobile money, 2 % par défaut). Le montant envoyé par l'app n'est jamais pris en compte.
+2. Écran « Payer {total} FCFA » : numéro pré-rempli et modifiable → « Envoyer la demande ».
+3. L'opérateur envoie une demande de confirmation (push USSD) sur le téléphone : le client tape son **code PIN** dans la fenêtre de l'opérateur.
+4. L'app vérifie le statut toutes les 3 s pendant environ 2 min → « Paiement reçu ✅ », ou « Expiré / Refusé » avec « Réessayer ».
+5. Un paiement n'est validé qu'après **revérification auprès du prestataire** (le webhook seul ne suffit jamais). Si le montant reçu est inférieur au total, la commande n'est pas validée et le client voit le message.
+6. Une commande mobile money ne passe en cuisine qu'une fois payée ; sans paiement, elle est annulée automatiquement après 30 min (réglable dans les paramètres admin).
+
+### Mode simulation
+Sans prestataire configuré (`PAYMENT_PROVIDER=simulation`, valeur actuelle sur Render), aucun argent ne circule : l'écran de paiement affiche « MODE TEST » et deux boutons pour simuler la saisie du code PIN. ⚠️ **En production, n'utilisez jamais la simulation** : n'importe quel client pourrait valider lui-même son paiement.
+
+### Mise en place de PayGate Global (recommandé au Togo)
+1. Créez le compte marchand sur paygateglobal.com et fournissez les pièces de l'entreprise.
+2. Récupérez la clé API (`auth_token`) dans le tableau de bord, puis sur Render : `PAYMENT_PROVIDER=paygate` et `PAYGATE_AUTH_TOKEN=…`.
+3. Déclarez l'URL de retour (callback) : `https://ivrivrii-api.onrender.com/api/payments/paygate/webhook`. Elle n'est pas signée : le serveur revérifie systématiquement chaque paiement via `/api/v2/status`.
+4. Indiquez la commission de PayGate dans `PROVIDER_FEE_PERCENT`.
+
+Flooz utilise le réseau `FLOOZ`, Mixx by Yas (ex-T-Money) le réseau `TMONEY`.
+
+## 5. Argent vers les comptes marchands du restaurant
+
+Avec un agrégateur, l'argent arrive d'abord sur le solde marchand de l'agrégateur, puis il est **reversé** sur les comptes **Flooz Marchand** (Moov Africa) et **Mixx by Yas Marchand** du restaurant — jamais sur un compte personnel.
+
+À faire dans le tableau de bord PayGate :
+1. Enregistrez les deux numéros marchands du restaurant (un par opérateur) comme comptes de reversement.
+2. Activez le **reversement automatique**, quotidien ou à partir d'un seuil.
+3. Renseignez les mêmes numéros dans `MERCHANT_FLOOZ_NUMBER` / `MERCHANT_MIXX_NUMBER` (Render) : ils s'affichent masqués dans l'admin (« 96 •• •• 12 »).
+
+**Délai de reversement : à confirmer avec PayGate** (il dépend du contrat). L'app crée une alerte si un paiement n'est pas reversé après 48 h.
+
+Suivi dans l'admin (**Plus → Encaissements**) : pour chaque paiement, montant brut, frais de l'agrégateur, net dû au restaurant, opérateur, référence opérateur et statut de reversement (`en_attente` → `reverse`). Quand le virement arrive sur le compte marchand, un agent sélectionne les paiements et saisit la référence du virement. Export CSV pour la comptabilité. Un rapprochement quotidien compare les paiements avec le prestataire et alerte en cas d'écart (paiement absent, montant différent, reversement en retard).
+
+**Paiement direct opérateur** : si le restaurant obtient un accès API marchand chez Moov Africa (Flooz) ou Yas (Mixx), le client paie directement le numéro marchand. Les connecteurs `flooz_direct` / `mixx_direct` (`backend/src/payments/providers/direct.js`) sont prêts à être complétés derrière la même interface (`initiate`, `checkStatus`, `verifyWebhook`), sans toucher au reste du code.
+
+**Remboursement** : une commande payée puis annulée crée une alerte « remboursement à prévoir ». Le bouton admin « Rembourser » passe par l'API du prestataire si elle existe ; sinon l'agent saisit la référence du remboursement fait depuis le compte marchand.
+
+Toute action sur l'argent (validation, rejet, reversement, remboursement) est inscrite au journal d'audit avec l'agent qui l'a faite.
+
+## 6. Hébergement sur Render et données
+
+`render.yaml` décrit le service (offre gratuite). ⚠️ **Sur l'offre gratuite, le disque n'est pas persistant** : à chaque redémarrage ou déploiement (et à chaque réveil après 15 min d'inactivité), la base de données **et** le dossier `uploads/` (photos du menu, photos de profil dans `uploads/avatars/`) sont effacés. Pour la production — et surtout dès que de vrais paiements circulent, sinon **l'historique des paiements est perdu** — utilisez un disque persistant (offre payante Render, `DB_PATH` sur le disque) ou un serveur avec stockage durable, et sauvegardez régulièrement la base.
+
+Autres points avant la production :
+- `JWT_SECRET` fort, `PAYMENT_PROVIDER` ≠ `simulation`.
+- Retirez `android:usesCleartextTraffic="true"` (AndroidManifest) et `NSAllowsArbitraryLoads` (Info.plist), utiles seulement pour le HTTP local.
 
 ## API (résumé)
 
 | Méthode | Route | Accès |
 |---|---|---|
 | POST | `/api/auth/register`, `/api/auth/login` | public |
-| GET/PUT | `/api/auth/me` | connecté |
+| GET/PUT/DELETE | `/api/auth/me` · PUT `/me/password` · POST/DELETE `/me/avatar` · GET `/me/stats` · `/me/addresses[/:id]` | connecté |
 | GET | `/api/settings`, `/api/categories`, `/api/products` | public |
 | POST/GET | `/api/orders` · GET `/api/orders/:id` · POST `/api/orders/:id/cancel` | client |
-| GET | `/api/admin/stats`, `/api/admin/orders?status=`, `/api/admin/users` | admin |
-| PATCH | `/api/admin/orders/:id/status` | admin |
-| POST/PUT/DELETE | `/api/admin/products[/:id]`, `/api/admin/categories[/:id]` | admin |
-| PATCH | `/api/admin/products/:id/availability` | admin |
-| POST | `/api/admin/upload` (multipart `image`) | admin |
-| PUT | `/api/admin/settings` | admin |
+| POST | `/api/orders/:id/payments` · GET `/payments/current` · POST `/payments/current/abandon` · `/payments/current/simulate` | client |
+| GET/POST | `/api/admin/payments/review` · `/api/admin/payments/:id/validate` · `/:id/reject` · `/api/admin/payments/recent` · `/merchant` · POST `/reconcile` | admin |
+| GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
+| GET | `/api/admin/stats`, `/api/admin/orders?status=`, `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
+| PATCH | `/api/admin/orders/:id/status` (pas de cuisine avant paiement mobile money) | admin |
+| POST/PUT/DELETE | `/api/admin/products[/:id]`, `/api/admin/categories[/:id]` · POST `/api/admin/upload` · PUT `/api/admin/settings` | admin |
+| POST | `/api/payments/paygate/webhook`, `/api/payments/kadev/webhook` | prestataires |
 
-Les prix sont toujours recalculés par le serveur à partir du catalogue : un client ne peut pas modifier le montant de sa commande.
+Les prix et montants sont toujours recalculés par le serveur à partir du catalogue.

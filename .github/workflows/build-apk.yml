@@ -44,7 +44,13 @@ jobs:
           done
           exit $code
       - run: flutter test
-      - run: flutter build apk --release --dart-define=API_URL=${{ github.event.inputs.api_url || 'https://ivrivrii-api.onrender.com' }}
+      # Clé Google Maps (restreinte au package Android + SHA-1) : secret GitHub GOOGLE_MAPS_API_KEY.
+      # Sans secret, la valeur est vide et l'app utilise automatiquement OpenStreetMap.
+      - run: >-
+          flutter build apk --release
+          --dart-define=API_URL=${{ github.event.inputs.api_url || 'https://ivrivrii-api.onrender.com' }}
+          --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
+          --dart-define=GOOGLE_ANDROID_CERT_SHA1=${{ secrets.GOOGLE_ANDROID_CERT_SHA1 }}
       - uses: actions/upload-artifact@v4
         with:
           name: ivrivrii-chicken-apk
