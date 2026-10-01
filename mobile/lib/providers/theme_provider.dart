@@ -1,64 +1,64 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Manages app theme mode (light, dark, system)
+/// Thème de l'application : clair, sombre ou celui du système (mémorisé).
 class ThemeProvider extends ChangeNotifier {
+  static const _prefKey = 'theme_mode';
+
   ThemeMode _themeMode = ThemeMode.system;
 
   ThemeMode get themeMode => _themeMode;
 
-  /// Initialize theme from saved preferences
+  /// Charge le choix enregistré ('light', 'dark' ou 'system').
   Future<void> init() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedMode = prefs.getString('theme_mode');
-
-      if (savedMode != null) {
+      final saved = prefs.getString(_prefKey);
+      if (saved != null) {
         _themeMode = ThemeMode.values.firstWhere(
-          (mode) => mode.toString() == 'ThemeMode.$savedMode',
+          (mode) => mode.name == saved,
           orElse: () => ThemeMode.system,
         );
       }
     } catch (e) {
-      debugPrint('Error loading theme preference: $e');
+      debugPrint('[ThemeProvider] Lecture du thème impossible : $e');
     }
     notifyListeners();
   }
 
-  /// Set theme mode and persist to preferences
+  /// Change le thème et l'enregistre.
   Future<void> setThemeMode(ThemeMode mode) async {
+    if (mode == _themeMode) return;
     _themeMode = mode;
     notifyListeners();
-
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('theme_mode', mode.name);
+      await prefs.setString(_prefKey, mode.name);
     } catch (e) {
-      debugPrint('Error saving theme preference: $e');
+      debugPrint('[ThemeProvider] Enregistrement du thème impossible : $e');
     }
   }
 
-  /// Toggle between light and dark mode
-  Future<void> toggleThemeMode() async {
-    if (_themeMode == ThemeMode.light) {
-      await setThemeMode(ThemeMode.dark);
-    } else if (_themeMode == ThemeMode.dark) {
-      await setThemeMode(ThemeMode.light);
-    } else {
-      // If system, switch to light
-      await setThemeMode(ThemeMode.light);
-    }
-  }
+  /// Bascule clair <-> sombre (depuis « système », passe en clair).
+  Future<void> toggleThemeMode() =>
+      setThemeMode(_themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light);
 
-  /// Check if using dark mode
+  /// Vrai si l'affichage est actuellement sombre.
   bool get isDarkMode {
-    if (_themeMode == ThemeMode.dark) {
-      return true;
-    } else if (_themeMode == ThemeMode.light) {
-      return false;
-    } else {
-      // System mode - check device brightness
-      return WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark;
+    switch (_themeMode) {
+      case ThemeMode.dark:
+        return true;
+      case ThemeMode.light:
+        return false;
+      case ThemeMode.system:
+        return WidgetsBinding.instance.platformDispatcher.platformBrightness == Brightness.dark;
     }
   }
+
+  /// Libellé français du mode.
+  static String label(ThemeMode mode) => switch (mode) {
+        ThemeMode.light => 'Clair',
+        ThemeMode.dark => 'Sombre',
+        ThemeMode.system => 'Système',
+      };
 }

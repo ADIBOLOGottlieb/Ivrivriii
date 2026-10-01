@@ -1,224 +1,386 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../models.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
+import '../../providers/theme_provider.dart';
+import '../../services/account_api.dart';
 import '../../services/api.dart';
+import '../../services/order_events.dart';
 import '../../theme.dart';
+import '../../utils/format.dart';
 import '../../widgets/common.dart';
+import 'profile/avatar.dart';
+import 'profile/change_password_screen.dart';
+import 'profile/delete_account_screen.dart';
+import 'profile/edit_profile_screen.dart';
+import 'profile/help_screen.dart';
+import 'profile/saved_addresses_screen.dart';
 
-class ProfileScreen extends StatelessWidget {
+// L'écran admin « Plus » ouvre EditProfileScreen depuis ce fichier.
+export 'profile/edit_profile_screen.dart' show EditProfileScreen;
+
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  late Future<AccountStats> _stats = fetchAccountStats();
+
+  @override
+  void initState() {
+    super.initState();
+    ordersChanged.addListener(_reloadStats);
+  }
+
+  @override
+  void dispose() {
+    ordersChanged.removeListener(_reloadStats);
+    super.dispose();
+  }
+
+  void _reloadStats() {
+    if (mounted) setState(() => _stats = fetchAccountStats());
+  }
+
+  Future<void> _refresh() async {
+    _reloadStats();
+    await context.read<AuthProvider>().refreshUser();
+    try {
+      await _stats;
+    } catch (_) {
+      // Affiché dans la carte des statistiques.
+    }
+  }
+
+  void _open(Widget page) => Navigator.push(context, MaterialPageRoute(builder: (_) => page));
 
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
     if (user == null) return const SizedBox.shrink();
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('Mon profil')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(20),
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    EditableAvatar(user: user),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(user.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                          Text(user.phone, style: TextStyle(color: cs.onSurfaceVariant)),
+                          if ((user.email ?? '').isNotEmpty)
+                            Text(user.email!, style: TextStyle(color: cs.onSurfaceVariant)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (!user.isAdmin) ...[
+              const SizedBox(height: 12),
+              _StatsCard(future: _stats, onRetry: _reloadStats),
+            ],
+            const _SectionLabel('Mon compte'),
+            Card(
+              child: Column(
                 children: [
-                  CircleAvatar(
-                    radius: 32,
-                    backgroundColor: AppColors.red,
-                    child: Text(
-                      user.name.isEmpty ? '?' : user.name[0].toUpperCase(),
-                      style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900),
+                  ListTile(
+                    leading: const Icon(Icons.edit_rounded, color: AppColors.red),
+                    title: const Text('Modifier mes informations'),
+                    subtitle: Text(
+                      (user.momoPhone ?? '').isNotEmpty ? 'Mobile money : ${user.momoPhone}' : 'Nom, e-mail, mobile money',
                     ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _open(EditProfileScreen(user: user)),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(user.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                        Text(user.phone, style: const TextStyle(color: AppColors.muted)),
-                        if (user.email != null) Text(user.email!, style: const TextStyle(color: AppColors.muted)),
-                      ],
-                    ),
+                  ListTile(
+                    leading: const Icon(Icons.location_on_rounded, color: AppColors.red),
+                    title: const Text('Mes adresses'),
+                    subtitle: const Text('Maison, bureau...'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _open(const SavedAddressesScreen()),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.lock_reset_rounded, color: AppColors.red),
+                    title: const Text('Changer mon mot de passe'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _open(const ChangePasswordScreen()),
                   ),
                 ],
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.edit_rounded, color: AppColors.red),
-                  title: const Text('Modifier mes informations'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => EditProfileScreen(user: user)),
+            const _SectionLabel('Apparence'),
+            const _ThemeCard(),
+            const _SectionLabel('Aide'),
+            Card(
+              child: Column(
+                children: [
+                  const _RestaurantContact(),
+                  ListTile(
+                    leading: const Icon(Icons.help_outline_rounded, color: AppColors.red),
+                    title: const Text('Questions fréquentes'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => _open(const FaqScreen()),
                   ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.location_on_rounded, color: AppColors.red),
-                  title: const Text('Adresse de livraison'),
-                  subtitle: Text(user.address ?? 'Non renseignée'),
-                ),
-                const _RestaurantContact(),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
-            onPressed: () async {
-              if (await confirmDialog(context, 'Déconnexion', 'Voulez-vous vous déconnecter ?',
-                  confirm: 'Se déconnecter')) {
-                if (!context.mounted) return;
-                context.read<CartProvider>().clear();
-                context.read<AuthProvider>().logout();
-              }
-            },
-            icon: const Icon(Icons.logout_rounded),
-            label: const Text('Se déconnecter'),
-          ),
-          const SizedBox(height: 24),
-          const Center(child: AppLogo(size: 70)),
-          const SizedBox(height: 8),
-          const Center(
-            child: Text('Ivrivrii Chicken • v1.0.0', style: TextStyle(color: AppColors.muted, fontSize: 12)),
-          ),
-        ],
+            const SizedBox(height: 20),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
+              onPressed: () async {
+                if (await confirmDialog(context, 'Déconnexion', 'Voulez-vous vous déconnecter ?',
+                    confirm: 'Se déconnecter')) {
+                  if (!context.mounted) return;
+                  context.read<CartProvider>().clear();
+                  context.read<AuthProvider>().logout();
+                }
+              },
+              icon: const Icon(Icons.logout_rounded),
+              label: const Text('Se déconnecter'),
+            ),
+            // Le serveur refuse la suppression d'un compte administrateur.
+            if (!user.isAdmin)
+              TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: AppColors.darkRed),
+                onPressed: () => _open(const DeleteAccountScreen()),
+                icon: const Icon(Icons.delete_forever_rounded, size: 20),
+                label: const Text('Supprimer mon compte'),
+              ),
+            const SizedBox(height: 24),
+            const Center(child: AppLogo(size: 70)),
+            const SizedBox(height: 8),
+            Center(
+              child: Text('Ivrivrii Chicken • v1.0.0', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _RestaurantContact extends StatelessWidget {
-  const _RestaurantContact();
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<AppSettings>(
-      future: Api.instance.settings(),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.8,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+/// Nombre de commandes et total dépensé.
+class _StatsCard extends StatelessWidget {
+  final Future<AccountStats> future;
+  final VoidCallback onRetry;
+  const _StatsCard({required this.future, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return FutureBuilder<AccountStats>(
+      future: future,
       builder: (context, snap) {
+        if (snap.hasError) {
+          return Card(
+            child: ListTile(
+              leading: Icon(Icons.bar_chart_rounded, color: cs.onSurfaceVariant),
+              title: const Text('Statistiques indisponibles'),
+              trailing: TextButton(onPressed: onRetry, child: const Text('Réessayer')),
+            ),
+          );
+        }
         final s = snap.data;
-        if (s == null) return const SizedBox.shrink();
-        return ListTile(
-          leading: const Icon(Icons.support_agent_rounded, color: AppColors.red),
-          title: const Text('Appeler le restaurant'),
-          subtitle: Text('${s.restaurantPhone}\n${s.restaurantAddress}'),
-          isThreeLine: true,
-          onTap: () => launchUrl(Uri(scheme: 'tel', path: s.restaurantPhone.replaceAll(' ', ''))),
+        final loading = snap.connectionState != ConnectionState.done || s == null;
+        Widget tile(IconData icon, String label, String value) => Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(icon, color: AppColors.red, size: 22),
+                    const SizedBox(height: 8),
+                    loading
+                        ? const SizedBox(
+                            height: 24,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                            ),
+                          )
+                        : FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              value,
+                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: cs.onSurface),
+                            ),
+                          ),
+                    Text(label, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+            );
+        return Row(
+          children: [
+            tile(Icons.receipt_long_rounded, (s?.ordersCount ?? 0) > 1 ? 'Commandes' : 'Commande',
+                '${s?.ordersCount ?? 0}'),
+            const SizedBox(width: 12),
+            tile(Icons.payments_rounded, 'Total dépensé', formatPrice(s?.totalSpent ?? 0)),
+          ],
         );
       },
     );
   }
 }
 
-class EditProfileScreen extends StatefulWidget {
-  final AppUser user;
-  const EditProfileScreen({super.key, required this.user});
-
-  @override
-  State<EditProfileScreen> createState() => _EditProfileScreenState();
-}
-
-class _EditProfileScreenState extends State<EditProfileScreen> {
-  final _formKey = GlobalKey<FormState>();
-  late final _name = TextEditingController(text: widget.user.name);
-  late final _phone = TextEditingController(text: widget.user.phone);
-  late final _email = TextEditingController(text: widget.user.email ?? '');
-  late final _address = TextEditingController(text: widget.user.address ?? '');
-  final _password = TextEditingController();
-  bool _saving = false;
-
-  @override
-  void dispose() {
-    for (final c in [_name, _phone, _email, _address, _password]) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _saving = true);
-    try {
-      await context.read<AuthProvider>().updateProfile({
-        'name': _name.text.trim(),
-        'email': _email.text.trim(),
-        'address': _address.text.trim(),
-        if (_password.text.isNotEmpty) 'password': _password.text,
-      });
-      if (!mounted) return;
-      showMessage(context, 'Profil mis à jour');
-      Navigator.pop(context);
-    } catch (e) {
-      if (mounted) showMessage(context, e, error: true);
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
+/// Choix du thème : clair, sombre ou celui du téléphone.
+class _ThemeCard extends StatelessWidget {
+  const _ThemeCard();
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Mes informations')),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(20),
+    final provider = context.watch<ThemeProvider>();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextFormField(
-              controller: _name,
-              decoration: const InputDecoration(labelText: 'Nom complet', prefixIcon: Icon(Icons.person_rounded)),
-              validator: (v) => (v == null || v.trim().isEmpty) ? 'Requis' : null,
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _phone,
-              enabled: false,
-              decoration: const InputDecoration(labelText: 'Téléphone', prefixIcon: Icon(Icons.phone_rounded)),
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _email,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(labelText: 'E-mail', prefixIcon: Icon(Icons.email_rounded)),
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _address,
-              maxLines: 2,
-              decoration: const InputDecoration(
-                labelText: 'Adresse de livraison',
-                prefixIcon: Icon(Icons.location_on_rounded),
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _password,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Nouveau mot de passe (optionnel)',
-                prefixIcon: Icon(Icons.lock_rounded),
-              ),
-              validator: (v) => (v != null && v.isNotEmpty && v.length < 6) ? '6 caractères minimum' : null,
-            ),
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _saving ? null : _save,
-              child: _saving
-                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
-                  : const Text('Enregistrer'),
+            const Text('Thème', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 10),
+            SegmentedButton<ThemeMode>(
+              showSelectedIcon: false,
+              segments: [
+                ButtonSegment(
+                  value: ThemeMode.light,
+                  icon: const Icon(Icons.light_mode_rounded),
+                  label: Text(ThemeProvider.label(ThemeMode.light)),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.system,
+                  icon: const Icon(Icons.brightness_auto_rounded),
+                  label: Text(ThemeProvider.label(ThemeMode.system)),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.dark,
+                  icon: const Icon(Icons.dark_mode_rounded),
+                  label: Text(ThemeProvider.label(ThemeMode.dark)),
+                ),
+              ],
+              selected: {provider.themeMode},
+              onSelectionChanged: (s) => provider.setThemeMode(s.first),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Appeler le restaurant ou lui écrire sur WhatsApp (numéro des paramètres).
+class _RestaurantContact extends StatefulWidget {
+  const _RestaurantContact();
+
+  @override
+  State<_RestaurantContact> createState() => _RestaurantContactState();
+}
+
+class _RestaurantContactState extends State<_RestaurantContact> {
+  late Future<AppSettings> _future = Api.instance.settings();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return FutureBuilder<AppSettings>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return ListTile(
+            leading: Icon(Icons.support_agent_rounded, color: cs.onSurfaceVariant),
+            title: const Text('Contact du restaurant indisponible'),
+            subtitle: const Text('Vérifiez votre connexion'),
+            trailing: TextButton(
+              onPressed: () => setState(() => _future = Api.instance.settings()),
+              child: const Text('Réessayer'),
+            ),
+          );
+        }
+        final s = snap.data;
+        if (s == null) {
+          return const ListTile(
+            leading: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+            title: Text('Contact du restaurant...'),
+          );
+        }
+        final phone = s.restaurantPhone.trim();
+        if (phone.isEmpty) {
+          return ListTile(
+            leading: Icon(Icons.support_agent_rounded, color: cs.onSurfaceVariant),
+            title: const Text('Numéro du restaurant non renseigné'),
+            subtitle: s.restaurantAddress.isEmpty ? null : Text(s.restaurantAddress),
+          );
+        }
+        return Column(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.call_rounded, color: AppColors.red),
+              title: const Text('Appeler le restaurant'),
+              subtitle: Text(s.restaurantAddress.isEmpty ? phone : '$phone\n${s.restaurantAddress}'),
+              isThreeLine: s.restaurantAddress.isNotEmpty,
+              onTap: () => openExternalLink(
+                context,
+                Uri(scheme: 'tel', path: dialNumber(phone)),
+                'Impossible de lancer l\'appel vers $phone',
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat_rounded, color: AppColors.green),
+              title: const Text('Écrire sur WhatsApp'),
+              subtitle: Text(phone),
+              onTap: () => openExternalLink(
+                context,
+                Uri.parse('https://wa.me/${whatsappNumber(phone)}'),
+                'Impossible d\'ouvrir WhatsApp',
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

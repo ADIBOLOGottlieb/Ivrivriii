@@ -137,6 +137,29 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Remplace l'utilisateur courant (après envoi de photo, modification du profil...).
+  void setUser(AppUser u) {
+    if (user == null) return; // déconnecté entre-temps
+    user = u;
+    notifyListeners();
+  }
+
+  /// Recharge le profil depuis le serveur. Les erreurs réseau sont ignorées
+  /// (on garde le profil en mémoire) ; renvoie l'utilisateur à jour ou null.
+  Future<AppUser?> refreshUser() async {
+    if (user == null) return null;
+    try {
+      final u = await Api.instance.me();
+      if (user == null) return null;
+      user = u;
+      notifyListeners();
+      return u;
+    } catch (e) {
+      debugPrint('[AuthProvider] refreshUser: $e');
+      return null;
+    }
+  }
+
   /// Logout and clear all authentication data
   Future<void> logout() async {
     try {

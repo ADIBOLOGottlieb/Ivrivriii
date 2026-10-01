@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -43,13 +44,17 @@ class IvrivriiApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Consumer<ThemeProvider>(
-      builder: (_, themeProvider, __) {
+      builder: (_, themeProvider, _) {
         return MaterialApp(
           title: 'Ivrivrii Chicken',
           debugShowCheckedModeBanner: false,
           theme: buildLightTheme(),
           darkTheme: buildDarkTheme(),
           themeMode: themeProvider.themeMode,
+          // Calendriers, sélecteurs et textes système en français.
+          locale: const Locale('fr'),
+          supportedLocales: const [Locale('fr')],
+          localizationsDelegates: GlobalMaterialLocalizations.delegates,
           home: const _Root(),
         );
       },
