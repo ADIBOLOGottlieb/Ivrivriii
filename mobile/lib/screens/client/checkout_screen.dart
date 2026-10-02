@@ -5,11 +5,14 @@ import '../../models.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
 import '../../services/api.dart';
+import '../../services/maps_link.dart';
 import '../../services/order_events.dart';
+import '../../services/shared_location.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import 'gps_picker_screen.dart';
+import 'location_import_sheet.dart';
 import 'profile/saved_addresses_screen.dart';
 
 /// Finalisation de la commande. Retourne la [Order] créée via `Navigator.pop`.
@@ -42,6 +45,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     _phone = TextEditingController(text: user?.phone ?? '');
     // FIX: Add proper error handling for settings API call
     _loadSettings();
+    // Position partagée depuis Google Maps (avant ou pendant l'ouverture de cet écran).
+    SharedLocationService.instance.pending.addListener(_onSharedLocation);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onSharedLocation());
   }
 
   Future<void> _loadSettings() async {
@@ -65,6 +71,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   @override
   void dispose() {
+    SharedLocationService.instance.pending.removeListener(_onSharedLocation);
     _address.dispose();
     _phone.dispose();
     _note.dispose();
@@ -94,17 +101,41 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  /// Choix de la position : Google Maps (partage / lien), coordonnées, plus code ou GPS.
   Future<void> _selectLocation() async {
-    final loc = await Navigator.push<LocationData>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => GpsPickerScreen(initialLat: _location?.lat, initialLng: _location?.lng),
-      ),
-    );
+    final loc = await showLocationImportSheet(context, initialLat: _location?.lat, initialLng: _location?.lng);
     if (loc == null || !mounted) return;
     setState(() {
       _location = loc;
       _prefillAddress(loc.address);
+    });
+  }
+
+  /// Une position partagée depuis Google Maps est arrivée : on l'utilise directement,
+  /// sauf si la feuille « Choisir ma position » est ouverte (elle s'en charge).
+  void _onSharedLocation() {
+    final service = SharedLocationService.instance;
+    if (!mounted || service.pending.value == null || isLocationImportSheetOpen) return;
+    final imported = service.consume();
+    if (imported != null) _useImported(imported);
+  }
+
+  Future<void> _useImported(ImportedLocation imported) async {
+    setState(() {
+      _mode = 'delivery';
+      _location = LocationData(lat: imported.lat, lng: imported.lng, address: importedAddressText(imported));
+      _prefillAddress(_location!.address);
+    });
+    showMessage(context, 'Position reçue de Google Maps ✅');
+    if ((imported.address?.trim() ?? '').isNotEmpty) return;
+    // Pas d'adresse partagée : on la cherche (OpenStreetMap) pour pré-remplir le champ.
+    final address = await resolveImportedAddress(imported);
+    final current = _location;
+    if (!mounted || address == null || current == null) return;
+    if (current.lat != imported.lat || current.lng != imported.lng) return;
+    setState(() {
+      _location = LocationData(lat: current.lat, lng: current.lng, address: address);
+      _prefillAddress(address);
     });
   }
 
@@ -247,7 +278,19 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     _mode == 'delivery' && (v == null || v.trim().isEmpty) ? 'Indiquez votre adresse' : null,
               ),
               const SizedBox(height: 14),
-              const _Label('Localisation GPS'),
+              const _Label('Localisation'),
+              FilledButton(
+                onPressed: _selectLocation,
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  textStyle: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                child: Text(_location == null
+                    ? '📍 Choisir ma position dans Google Maps'
+                    : '📍 Changer ma position (Google Maps)'),
+              ),
+              const SizedBox(height: 10),
               Material(
                 color: _location != null
                     ? AppColors.green.withValues(alpha: 0.12)
@@ -269,7 +312,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                                     if ((_location!.address ?? '').trim().isNotEmpty) _location!.address!.trim(),
                                     '${_location!.lat.toStringAsFixed(4)}, ${_location!.lng.toStringAsFixed(4)}',
                                   ].join('\n')
-                                : 'Cliquer pour sélectionner votre position',
+                                : 'Aucune position choisie : le livreur en a besoin pour vous trouver.',
                             style: TextStyle(
                               color: _location != null ? AppColors.green : AppColors.muted,
                               fontSize: _location != null ? 13 : 14,

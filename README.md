@@ -87,7 +87,14 @@ L'APK doit toujours être signé avec **la même clé** : sinon Android refuse d
 
 ⚠️ **Sauvegardez le fichier `.jks` et son mot de passe** (clé USB, coffre-fort de mots de passe) : s'ils sont perdus, les téléphones devront désinstaller l'app pour installer une nouvelle version. Au premier passage à la clé fixe, l'ancienne version (signée en débogage) doit être désinstallée une fois.
 
-## 3. Carte Google (facultatif)
+## 3. Position du client et cartes
+
+### Position depuis l'app Google Maps (gratuit, sans clé)
+À la commande, le client touche **« Choisir ma position dans Google Maps »** : l'application Google Maps de son téléphone s'ouvre ; il pose un repère sur sa maison (appui long), touche **Partager** puis **Ivrivrii Chicken**. Ivrivrii reçoit le lien et en extrait la position (et le nom / l'adresse du lieu s'ils sont partagés). Autres possibilités : « Copier le lien » dans Google Maps (le lien est détecté au retour dans l'app), coller un lien, des coordonnées ou un plus code, ou « Utiliser ma position actuelle » (GPS). La position est ensuite confirmée sur un aperçu OpenStreetMap, et le livreur l'ouvre directement dans Google Maps.
+
+Aucune API Google n'est utilisée : liens Google Maps décodés dans l'app (liens courts `maps.app.goo.gl` résolus par redirection, coordonnées, plus codes), aperçu OpenStreetMap, adresse via Nominatim, itinéraire via OSRM.
+
+### Carte Google intégrée (facultatif, compte de facturation Google requis)
 
 Sans clé, l'app utilise automatiquement **OpenStreetMap**. Avec une clé, elle affiche les tuiles officielles Google (en français, région Togo), la recherche d'adresse Google et l'adresse du point choisi.
 

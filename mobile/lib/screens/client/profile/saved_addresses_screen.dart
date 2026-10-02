@@ -5,6 +5,7 @@ import '../../../services/account_api.dart';
 import '../../../theme.dart';
 import '../../../widgets/common.dart';
 import '../gps_picker_screen.dart';
+import '../location_import_sheet.dart';
 
 const _labelHome = 'Maison';
 const _labelOffice = 'Bureau';
@@ -317,12 +318,24 @@ class _SavedAddressFormScreenState extends State<SavedAddressFormScreen> {
 
   String get _label => _kind == 'Autre' ? _customLabel.text.trim() : _kind;
 
+  /// Position depuis Google Maps (partage / lien), coordonnées, plus code ou GPS.
+  Future<void> _importPosition() async {
+    final loc = await showLocationImportSheet(context, initialLat: _lat, initialLng: _lng);
+    if (loc == null || !mounted) return;
+    _applyPosition(loc);
+  }
+
+  /// Ajustement fin sur la carte OpenStreetMap.
   Future<void> _pickPosition() async {
     final loc = await Navigator.push<LocationData>(
       context,
       MaterialPageRoute(builder: (_) => GpsPickerScreen(initialLat: _lat, initialLng: _lng)),
     );
     if (loc == null || !mounted) return;
+    _applyPosition(loc);
+  }
+
+  void _applyPosition(LocationData loc) {
     setState(() {
       _lat = loc.lat;
       _lng = loc.lng;
@@ -430,13 +443,20 @@ class _SavedAddressFormScreenState extends State<SavedAddressFormScreen> {
                       ],
                     ),
                     const SizedBox(height: 10),
+                    FilledButton.tonalIcon(
+                      onPressed: _importPosition,
+                      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(50)),
+                      icon: const Icon(Icons.map_rounded),
+                      label: Text(hasPosition ? 'Changer (Google Maps)' : 'Choisir dans Google Maps'),
+                    ),
+                    const SizedBox(height: 6),
                     Wrap(
                       spacing: 8,
                       children: [
                         OutlinedButton.icon(
                           onPressed: _pickPosition,
-                          icon: const Icon(Icons.map_rounded),
-                          label: Text(hasPosition ? 'Modifier sur la carte' : 'Choisir sur la carte'),
+                          icon: const Icon(Icons.edit_location_alt_rounded),
+                          label: Text(hasPosition ? 'Ajuster sur la carte' : 'Choisir sur la carte'),
                         ),
                         if (hasPosition)
                           TextButton(
