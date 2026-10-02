@@ -221,22 +221,39 @@ class _Summary extends StatelessWidget {
     ];
     if (s != null) {
       final delivery = s.deliveryFee;
-      // Même formule que le serveur : frais calculés sur sous-total + livraison.
-      final fee = paymentFeeFor(subtotal + delivery, 'flooz', s.paymentFeePercent);
+      final base = subtotal + delivery;
+      // Même formule que le serveur : frais (commission de l'agrégateur, par opérateur) sur sous-total + livraison.
+      final flooz = s.feePercentFor('flooz');
+      final mixx = s.feePercentFor('mixx');
+      final totalStyle = TextStyle(fontWeight: FontWeight.w700, color: scheme.onSurface, fontSize: 13.5);
+      Widget total(String label, String method) => row(
+            label,
+            Text(formatPrice(base + paymentFeeFor(base, method, s.feePercentFor(method))),
+                style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red)),
+            style: totalStyle,
+          );
+      children.add(row('Livraison (si livraison)', Text(formatPrice(delivery), style: muted)));
+      if (flooz == mixx) {
+        children.addAll([
+          row('Frais mobile money (${formatPercent(flooz)} %)',
+              Text(formatPrice(paymentFeeFor(base, 'flooz', flooz)), style: muted)),
+          const SizedBox(height: 2),
+          total('Total estimé (mobile money)', 'flooz'),
+        ]);
+      } else {
+        children.addAll([
+          row('Frais Flooz (${formatPercent(flooz)} %)', Text(formatPrice(paymentFeeFor(base, 'flooz', flooz)), style: muted)),
+          row('Frais Mixx (${formatPercent(mixx)} %)', Text(formatPrice(paymentFeeFor(base, 'mixx', mixx)), style: muted)),
+          const SizedBox(height: 2),
+          total('Total estimé (Flooz)', 'flooz'),
+          total('Total estimé (Mixx)', 'mixx'),
+        ]);
+      }
       children.addAll([
-        row('Livraison (si livraison)', Text(formatPrice(delivery), style: muted)),
-        row('Frais mobile money (${formatPercent(s.paymentFeePercent)} %)', Text(formatPrice(fee), style: muted)),
-        const SizedBox(height: 2),
-        row(
-          'Total estimé (mobile money)',
-          Text(formatPrice(subtotal + delivery + fee),
-              style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red)),
-          style: TextStyle(fontWeight: FontWeight.w700, color: scheme.onSurface, fontSize: 13.5),
-        ),
         const SizedBox(height: 2),
         Text(
-          "Estimation avec livraison et paiement Flooz / Mixx. En espèces ou à emporter, ces frais "
-          "ne s'appliquent pas. Le total exact est confirmé à la commande.",
+          "Estimation avec livraison et paiement Flooz / Mixx (frais = commission du service de paiement). "
+          "En espèces, pas de frais ; à emporter, pas de livraison. Le total exact est confirmé à la commande.",
           style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11.5, height: 1.3),
         ),
       ]);

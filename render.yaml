@@ -45,9 +45,17 @@ services:
         sync: false
       - key: MERCHANT_DISPLAY_NAME
         value: Ivrivrii Chicken
-      # Commission prélevée par l'agrégateur sur chaque paiement (en %), pour calculer le net reversé.
+      # Frais de paiement = commission de l'agrégateur, en % du montant payé (ex. 3.5).
+      # Mettez ici la commission exacte de votre contrat PayGate/KADEV : le client la paie
+      # (total = (commande + livraison) / (1 − %/100)) et le restaurant reçoit commande + livraison.
+      # Un taux par opérateur, sinon PROVIDER_FEE_PERCENT pour les deux. Laissez vide en simulation :
+      # c'est alors le réglage « frais de paiement » de l'app admin qui s'applique.
+      - key: PROVIDER_FEE_PERCENT_FLOOZ
+        sync: false
+      - key: PROVIDER_FEE_PERCENT_MIXX
+        sync: false
       - key: PROVIDER_FEE_PERCENT
-        value: "0"
+        sync: false
       # KADEV PAY (ancien parcours navigateur), uniquement si PAYMENT_PROVIDER=kadev.
       - key: KADEV_PUBLIC_KEY
         sync: false

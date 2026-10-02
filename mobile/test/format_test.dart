@@ -10,14 +10,54 @@ void main() {
     expect(formatPrice(1250000), '1 250 000 FCFA');
   });
 
-  test('frais de paiement : identiques au serveur, arrondis au supérieur', () {
-    expect(paymentFeeFor(4000, 'flooz', 2), 80);
-    expect(paymentFeeFor(4050, 'mixx', 2), 81); // 81 pile
-    expect(paymentFeeFor(4010, 'flooz', 2), 81); // 80,2 -> 81
-    expect(paymentFeeFor(4000, 'flooz', 2.5), 100);
+  // Mêmes cas que backend/test/fees.test.js (valeurs identiques).
+  test("frais de paiement : commission de l'agrégateur reportée sur le client (identique au serveur)", () {
+    expect(paymentGrossFor(21000, 2), 21429); // 21 000 / 0,98 = 21 428,57 -> 21 429
+    expect(paymentFeeFor(21000, 'flooz', 2), 429);
+    expect(providerFeeOn(21429, 2), 429);
+    expect(paymentGrossFor(21000, 3.5), 21762); // 21 000 / 0,965 = 21 761,66 -> 21 762
+    expect(paymentFeeFor(21000, 'mixx', 3.5), 762);
+    expect(providerFeeOn(21762, 3.5), 762);
+    expect(paymentFeeFor(4000, 'flooz', 2), 82);
+    expect(paymentFeeFor(4000, 'flooz', 2.5), 103);
+    expect(paymentFeeFor(4000, 'flooz', 0), 0);
+    expect(paymentFeeFor(21000, 'flooz', 1), 213);
+    expect(paymentFeeFor(21000, 'flooz', 3), 650);
     expect(paymentFeeFor(4000, 'cash', 2), 0);
     expect(formatPercent(2.0), '2');
     expect(formatPercent(2.5), '2,5');
+    expect(formatPercent(3.5), '3,5');
+  });
+
+  test('le restaurant reçoit sous-total + livraison (écart ≤ 1 F)', () {
+    for (final p in [0, 1, 2, 2.5, 3, 3.5]) {
+      for (var base = 2000; base <= 200000; base += 7) {
+        final gross = paymentGrossFor(base, p);
+        expect(gross - providerFeeOn(gross, p), base, reason: 'p=$p base=$base');
+        // Si l'agrégateur arrondit au plus proche ou à l'inférieur : net entre base et base + 1.
+        final exact = gross * p / 100;
+        for (final fee in [exact.round(), exact.floor()]) {
+          expect(gross - fee >= base && gross - fee <= base + 1, isTrue, reason: 'p=$p base=$base');
+        }
+      }
+    }
+  });
+
+  test('taux par opérateur lu dans /api/settings (tolérant si absent)', () {
+    final s = AppSettings.fromJson({
+      'delivery_fee': 1000,
+      'payment_fee_percent': 3.5,
+      'payment_fee_percent_by_operator': {'flooz': 3.5, 'mixx': 2.5},
+      'payment_fee_source': 'aggregator',
+    });
+    expect(s.feePercentFor('flooz'), 3.5);
+    expect(s.feePercentFor('mixx'), 2.5);
+    expect(s.feesFromAggregator, isTrue);
+    expect(s.toJson().containsKey('payment_fee_percent'), isFalse); // n'écrase pas le réglage admin
+    final old = AppSettings.fromJson({'payment_fee_percent': 2});
+    expect(old.feePercentFor('mixx'), 2);
+    expect(old.paymentFeeSource, 'settings');
+    expect(old.toJson()['payment_fee_percent'], 2);
   });
 
   test('moyens de paiement alignés sur le serveur (flooz, mixx)', () {
@@ -92,7 +132,8 @@ void main() {
   test('estimation du panier = formule serveur (sous-total + livraison + frais)', () {
     const subtotal = 20000, delivery = 1000;
     final fee = paymentFeeFor(subtotal + delivery, 'flooz', 2);
-    expect(fee, 420);
-    expect(subtotal + delivery + fee, 21420);
+    expect(fee, 429);
+    expect(subtotal + delivery + fee, 21429);
+    expect(subtotal + delivery + paymentFeeFor(subtotal + delivery, 'flooz', 3.5), 21762);
   });
 }

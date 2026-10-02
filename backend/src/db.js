@@ -119,6 +119,8 @@ addColumn('orders', 'payment_status', "TEXT NOT NULL DEFAULT 'unpaid'");
 addColumn('orders', 'payment_reference', 'TEXT');
 addColumn('orders', 'payment_token', 'TEXT');
 addColumn('orders', 'paid_at', 'TEXT');
+// Taux des frais mobile money figé à la création (commission de l'agrégateur ou réglage admin).
+addColumn('orders', 'payment_fee_percent', 'REAL');
 
 // Paiements mobile money : suivi de l'argent (brut, frais, net, reversement, remboursement).
 for (const [col, def] of [
@@ -182,7 +184,8 @@ function getSettings() {
     is_open: (s.is_open ?? '1') === '1',
     restaurant_phone: s.restaurant_phone ?? '+228 97 98 02 79',
     restaurant_address: s.restaurant_address ?? 'Lomé, Togo',
-    // Frais de paiement mobile money reportés sur le client (en %).
+    // Frais de paiement mobile money reportés sur le client (en %), utilisé seulement sans
+    // commission d'agrégateur en variable d'environnement (voir payments/fees.js).
     payment_fee_percent: Number(s.payment_fee_percent ?? 2),
     // Seuils de détection de pic de transactions.
     spike_min_orders: Number(s.spike_min_orders ?? 10),

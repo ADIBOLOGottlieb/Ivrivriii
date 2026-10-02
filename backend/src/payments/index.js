@@ -2,6 +2,7 @@
  * Paiement mobile money (Flooz, Mixx by Yas) — point d'entrée.
  *
  *  providers/   prestataires derrière une interface commune (simulation, paygate, kadev, flooz_direct, mixx_direct)
+ *  fees.js      taux et calcul des frais (commission de l'agrégateur, source unique)
  *  core.js      tentatives, validation, écarts de montant, remboursements, encaissements, reversements
  *  pages.js     pages navigateur /pay/:id (KADEV) + webhooks (monté avant express.json)
  *  routes.js    API JSON client et admin (montée après express.json)
@@ -9,6 +10,7 @@
  */
 const providers = require('./providers');
 const core = require('./core');
+const fees = require('./fees');
 const pages = require('./pages');
 const { createApiRouter } = require('./routes');
 const { startPaymentTasks } = require('./tasks');
@@ -29,6 +31,8 @@ module.exports = {
   createApiRouter,
   startPaymentTasks,
   paymentFee: core.paymentFee,
+  paymentFeeDetails: core.paymentFeeDetails,
+  feeInfo: fees.feeInfo,
   isMobileMoney: core.isMobileMoney,
   cancelPendingAttempts: core.cancelPendingAttempts,
   newToken: pages.newToken,

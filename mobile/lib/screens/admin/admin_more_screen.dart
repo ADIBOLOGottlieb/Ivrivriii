@@ -118,6 +118,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _phone = TextEditingController();
   final _address = TextEditingController();
   final _cancelMinutes = TextEditingController();
+  final _paymentFee = TextEditingController(); // réglage admin (si l'agrégateur n'impose pas ses frais)
   late final Future<MerchantInfo> _merchant = fetchMerchant();
   AppSettings? _current; // réglages chargés : conserve les champs non modifiés ici
   bool _isOpen = true;
@@ -133,7 +134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    for (final c in [_fee, _min, _phone, _address, _cancelMinutes]) {
+    for (final c in [_fee, _min, _phone, _address, _cancelMinutes, _paymentFee]) {
       c.dispose();
     }
     super.dispose();
@@ -150,6 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _address.text = s.restaurantAddress;
         _isOpen = s.isOpen;
         _cancelMinutes.text = '${s.momoUnpaidCancelMinutes}';
+        _paymentFee.text = formatPercent(s.paymentFeePercentSettings ?? s.paymentFeePercent);
         _current = s;
         _loaded = true;
         _error = null;
@@ -162,6 +164,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
+    final current = _current;
+    // Frais fixés par l'agrégateur : champ en lecture seule, valeur chargée renvoyée telle quelle
+    // (AppSettings.toJson ne l'envoie pas au serveur dans ce cas).
+    final feePercent = current != null && current.feesFromAggregator
+        ? (current.paymentFeePercentSettings ?? current.paymentFeePercent)
+        : _parsePercent(_paymentFee.text) ?? current?.paymentFeePercent ?? 2;
     try {
       await Api.instance.saveSettings(AppSettings(
         deliveryFee: int.parse(_fee.text.trim()),
@@ -171,7 +179,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         restaurantAddress: _address.text.trim(),
         // Champs non modifiés ici : on renvoie les valeurs chargées pour ne pas les écraser
         // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
-        paymentFeePercent: _current?.paymentFeePercent ?? 2,
+        paymentFeePercent: feePercent,
+        paymentFeePercentByOperator: _current?.paymentFeePercentByOperator,
+        paymentFeeSource: _current?.paymentFeeSource ?? 'settings',
+        paymentFeePercentSettings: feePercent,
         paymentMode: _current?.paymentMode ?? 'test',
         paymentProvider: _current?.paymentProvider ?? 'simulation',
         maxQuantityPerItem: _current?.maxQuantityPerItem ?? 999,
@@ -186,6 +197,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) setState(() => _saving = false);
     }
   }
+
+  static double? _parsePercent(String? v) => double.tryParse((v ?? '').trim().replaceAll(',', '.'));
 
   String? _amount(String? v) => int.tryParse(v?.trim() ?? '') == null ? 'Montant invalide' : null;
 
@@ -246,6 +259,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 24),
                   const Text('Paiement mobile money', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
+                  _paymentFeeField(),
+                  const SizedBox(height: 14),
                   TextFormField(
                     controller: _cancelMinutes,
                     keyboardType: TextInputType.number,
@@ -273,6 +288,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+    );
+  }
+
+  /// Frais de paiement : modifiables (réglage admin) ou informatifs s'ils sont fixés par l'agrégateur.
+  Widget _paymentFeeField() {
+    final s = _current;
+    if (s != null && s.feesFromAggregator) {
+      final scheme = Theme.of(context).colorScheme;
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.lock_outline_rounded, color: scheme.onSurfaceVariant, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Frais de paiement', style: TextStyle(fontWeight: FontWeight.w800, color: scheme.onSurface)),
+                  const SizedBox(height: 4),
+                  Text(
+                    "Fixés par l'agrégateur : Flooz ${formatPercent(s.feePercentFor('flooz'))} %, "
+                    "Mixx ${formatPercent(s.feePercentFor('mixx'))} %. Payés par le client : le restaurant "
+                    'reçoit le montant de la commande + livraison.',
+                    style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return TextFormField(
+      controller: _paymentFee,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: const InputDecoration(
+        labelText: 'Frais de paiement mobile money (payés par le client)',
+        helperText: "Entre 0 et 10 %. À remplacer par la commission de l'agrégateur dès qu'elle est configurée.",
+        helperMaxLines: 2,
+        suffixText: '%',
+      ),
+      validator: (v) {
+        final p = _parsePercent(v);
+        if (p == null || p < 0 || p > 10) return 'Entre 0 et 10 %';
+        return null;
+      },
     );
   }
 }

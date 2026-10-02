@@ -197,6 +197,21 @@ app.post('/api/auth/login', loginLimiter, h((req, res) => {
 
 // ---------- Catalogue public ----------
 
+/**
+ * Frais de paiement exposés à l'app : taux par opérateur (commission de l'agrégateur ou réglage
+ * admin) + provenance. payment_fee_percent = taux Flooz (compatibilité anciennes versions).
+ */
+function feeSettings() {
+  const fee = payments.feeInfo();
+  return {
+    payment_fee_percent: fee.by_operator.flooz,
+    payment_fee_percent_by_operator: fee.by_operator,
+    payment_fee_source: fee.source,
+    // Réglage admin (repli quand l'agrégateur n'a pas de commission configurée).
+    payment_fee_percent_settings: getSettings().payment_fee_percent,
+  };
+}
+
 app.get('/api/settings', h((_req, res) => {
   const s = getSettings();
   res.json({
@@ -205,7 +220,7 @@ app.get('/api/settings', h((_req, res) => {
     is_open: s.is_open,
     restaurant_phone: s.restaurant_phone,
     restaurant_address: s.restaurant_address,
-    payment_fee_percent: s.payment_fee_percent,
+    ...feeSettings(),
     payment_mode: payments.paymentInfo().mode,
     payment_provider: payments.paymentInfo().provider,
     max_quantity_per_item: MAX_QUANTITY_PER_ITEM,
@@ -269,21 +284,22 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   const subtotal = lines.reduce((s, l) => s + l.product.price * l.qty, 0);
   if (subtotal < settings.min_order) throw httpError(400, `Commande minimum : ${settings.min_order} FCFA`);
   const deliveryFee = mode === 'delivery' ? settings.delivery_fee : 0;
-  // Frais de l'agrégateur de paiement reportés sur le client.
-  const paymentFee = payments.paymentFee(subtotal + deliveryFee, payment_method);
+  // Commission de l'agrégateur reportée sur le client : le restaurant reçoit sous-total + livraison.
+  // Le taux est figé sur la commande (net calculé au même taux au moment du paiement).
+  const { fee: paymentFee, percent: paymentFeePercent } = payments.paymentFeeDetails(subtotal + deliveryFee, payment_method);
   const mobile = payments.isMobileMoney(payment_method);
 
   const orderId = transaction(() => {
     const info = db
       .prepare(
         `INSERT INTO orders (user_id, mode, address, phone, note, payment_method, subtotal, delivery_fee, total,
-           payment_fee, payment_status, payment_token, delivery_lat, delivery_lng, delivery_accuracy)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           payment_fee, payment_fee_percent, payment_status, payment_token, delivery_lat, delivery_lng, delivery_accuracy)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         req.user.id, mode, mode === 'delivery' ? address.trim().slice(0, 300) : null, phone.trim().slice(0, 20),
         note?.trim()?.slice(0, 300) || null, payment_method, subtotal, deliveryFee, subtotal + deliveryFee + paymentFee,
-        paymentFee, mobile ? 'pending' : 'unpaid', mobile ? payments.newToken() : null,
+        paymentFee, paymentFeePercent, mobile ? 'pending' : 'unpaid', mobile ? payments.newToken() : null,
         loc?.lat ?? null, loc?.lng ?? null, loc?.accuracy ?? null,
       );
     const insertItem = db.prepare(
@@ -529,7 +545,16 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     }
   });
   audit('settings_changed', { userId: req.user.id, details: changed, ip: req.ip });
-  res.json(getSettings());
+  // payment_fee_percent est validé et enregistré, mais ignoré pour le calcul tant que la commission
+  // de l'agrégateur est définie en variable d'environnement (payment_fee_source = 'aggregator').
+  // Réponse au même format que GET /api/settings.
+  res.json({
+    ...getSettings(),
+    ...feeSettings(),
+    payment_mode: payments.paymentInfo().mode,
+    payment_provider: payments.paymentInfo().provider,
+    max_quantity_per_item: MAX_QUANTITY_PER_ITEM,
+  });
 }));
 
 // ---------- Sécurité & monitoring ----------
@@ -594,6 +619,6 @@ payments.startPaymentTasks();
 
 const PORT = Number(process.env.PORT) || 4000;
 app.listen(PORT, '0.0.0.0', () => {
-  log.info('démarrage', { port: PORT, payment: payments.paymentInfo() });
+  log.info('démarrage', { port: PORT, payment: payments.paymentInfo(), fees: payments.feeInfo() });
   console.log(`🐔 API Ivrivrii Chicken sur http://localhost:${PORT}`);
 });

@@ -46,13 +46,45 @@ const paymentMethods = <String, String>{
 /// Moyens payés en ligne par mobile money (frais de paiement à la charge du client).
 bool isMobileMoney(String method) => method == 'flooz' || method == 'mixx';
 
-/// Frais de paiement mobile money, arrondis à l'unité supérieure.
-/// Même formule que le serveur (backend/src/payments.js) : ceil(montant × % / 100).
-int paymentFeeFor(int amount, String method, num percent) =>
-    isMobileMoney(method) ? (amount * percent / 100).ceil() : 0;
+// Frais de paiement mobile money : même formule que le serveur (backend/src/payments/fees.js).
+// L'agrégateur prélève p % du montant brut payé : pour que le restaurant reçoive [base]
+// (sous-total + livraison), le client paie brut = ceil(base / (1 − p/100)).
+// Calcul en entiers, taux en centièmes de % (3,5 % → 350).
+int _basisPoints(num percent) {
+  if (!percent.isFinite || percent <= 0) return 0;
+  final bp = (percent * 100).round();
+  return bp > 9999 ? 9999 : bp;
+}
+
+/// Montant brut à payer pour que le restaurant reçoive [base] après [percent] % de commission.
+int paymentGrossFor(int base, num percent) {
+  final bp = _basisPoints(percent);
+  if (base <= 0 || bp == 0) return base < 0 ? 0 : base;
+  final d = 10000 - bp;
+  return (base * 10000 + d - 1) ~/ d;
+}
+
+/// Frais de paiement facturés au client pour [base] = sous-total + livraison (0 hors mobile money).
+int paymentFeeFor(int base, String method, num percent) =>
+    isMobileMoney(method) ? paymentGrossFor(base, percent) - (base < 0 ? 0 : base) : 0;
+
+/// Commission de l'agrégateur sur un montant brut (arrondie à l'unité supérieure, comme le serveur).
+int providerFeeOn(int gross, num percent) {
+  final bp = _basisPoints(percent);
+  if (gross <= 0 || bp == 0) return 0;
+  return (gross * bp + 9999) ~/ 10000;
+}
 
 /// « 2 » plutôt que « 2.0 », « 2,5 » pour les pourcentages décimaux.
-String formatPercent(num p) => p == p.roundToDouble() ? '${p.round()}' : p.toString().replaceAll('.', ',');
+String formatPercent(num p) {
+  if (p == p.roundToDouble()) return '${p.round()}';
+  // Au plus 2 décimales, sans zéros inutiles (3,5 et non 3,50).
+  var s = p.toStringAsFixed(2);
+  while (s.endsWith('0')) {
+    s = s.substring(0, s.length - 1);
+  }
+  return s.replaceAll('.', ',');
+}
 
 // Libellés des anciens moyens de paiement, pour l'historique des commandes.
 const _legacyPaymentLabels = <String, String>{

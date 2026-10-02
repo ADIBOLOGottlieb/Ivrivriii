@@ -10,22 +10,34 @@
  *  - idempotence : un paiement déjà payé n'est jamais re-crédité.
  */
 const crypto = require('crypto');
-const { db, transaction, getSettings } = require('../db');
+const { db, transaction } = require('../db');
 const { log } = require('../logger');
 const { audit, raiseAlert } = require('../monitor');
 const providers = require('./providers');
 const { httpError, fcfa, operatorLabel, normalizeMomoPhone, sqlTime, parseJson } = require('./util');
+const fees = require('./fees');
 
 const MOBILE_METHODS = ['flooz', 'mixx'];
 const isMobileMoney = (method) => MOBILE_METHODS.includes(method);
-const PROVIDER_FEE_PERCENT = Math.min(Math.max(Number(process.env.PROVIDER_FEE_PERCENT) || 0, 0), 20);
 // Délai au-delà duquel une tentative en attente part dans la file « à vérifier ».
 const REVIEW_AFTER_MINUTES = 2;
 
-/** Frais de paiement reportés sur le client (arrondis à l'unité supérieure). */
-function paymentFee(amount, method) {
-  if (!isMobileMoney(method)) return 0;
-  return Math.ceil((amount * getSettings().payment_fee_percent) / 100);
+/**
+ * Frais de paiement reportés sur le client pour `amount` = sous-total + livraison.
+ * Taux = commission de l'agrégateur de l'opérateur (voir fees.js) : le restaurant reçoit `amount`.
+ * @returns {{ fee: number, percent: number|null }}
+ */
+function paymentFeeDetails(amount, method) {
+  if (!isMobileMoney(method)) return { fee: 0, percent: null };
+  const percent = fees.feePercentFor(method);
+  return { fee: fees.customerFee(amount, percent), percent };
+}
+const paymentFee = (amount, method) => paymentFeeDetails(amount, method).fee;
+
+/** Taux figé sur la commande à sa création (anciennes commandes : taux actuel de l'opérateur). */
+function orderFeePercent(order) {
+  const stored = order?.payment_fee_percent;
+  return stored === null || stored === undefined ? fees.feePercentFor(order?.payment_method) : Number(stored);
 }
 
 const getPayment = (id) => db.prepare('SELECT * FROM payments WHERE id = ?').get(Number(id));
@@ -116,7 +128,8 @@ function handlePaid(p, { amount, operatorReference, providerReference, raw, vali
   transaction(() => {
     const fresh = getPayment(p.id);
     if (fresh.status === 'paid') return;
-    const fee = Math.round((received * PROVIDER_FEE_PERCENT) / 100);
+    // Commission de l'agrégateur sur le brut reçu, au taux figé sur la commande (fees.js).
+    const fee = fees.providerFeeOn(received, orderFeePercent(order));
     db.prepare(
       `UPDATE payments SET status = 'paid', message = NULL, needs_review = 0, gross_amount = ?, provider_fee = ?,
          net_amount = ?, operator_reference = COALESCE(?, operator_reference), provider_reference = COALESCE(?, provider_reference),
@@ -547,9 +560,10 @@ function recentPaid(sinceId) {
 
 module.exports = {
   MOBILE_METHODS,
-  PROVIDER_FEE_PERCENT,
   isMobileMoney,
   paymentFee,
+  paymentFeeDetails,
+  orderFeePercent,
   getPayment,
   currentPayment,
   getOrderRow,

@@ -272,7 +272,14 @@ class AppSettings {
   final bool isOpen;
   final String restaurantPhone;
   final String restaurantAddress;
+  /// Taux Flooz (compatibilité) : préférer [feePercentFor].
   final double paymentFeePercent;
+  /// Taux des frais par opérateur ('flooz', 'mixx') = commission de l'agrégateur ou réglage admin.
+  final Map<String, double> paymentFeePercentByOperator;
+  /// 'aggregator' (commission fixée par le contrat PayGate/KADEV) ou 'settings' (réglage admin).
+  final String paymentFeeSource;
+  /// Réglage admin des frais (utilisé seulement si la source est 'settings').
+  final double? paymentFeePercentSettings;
   final String paymentMode; // 'test' ou 'live'
   final String paymentProvider; // simulation, paygate, kadev...
   final int maxQuantityPerItem;
@@ -285,25 +292,48 @@ class AppSettings {
     required this.restaurantPhone,
     required this.restaurantAddress,
     this.paymentFeePercent = 2,
+    Map<String, double>? paymentFeePercentByOperator,
+    this.paymentFeeSource = 'settings',
+    this.paymentFeePercentSettings,
     this.paymentMode = 'test',
     this.paymentProvider = 'simulation',
     this.maxQuantityPerItem = 999,
     this.momoUnpaidCancelMinutes = 30,
-  });
+  }) : paymentFeePercentByOperator =
+            paymentFeePercentByOperator ?? {'flooz': paymentFeePercent, 'mixx': paymentFeePercent};
 
-  factory AppSettings.fromJson(Map<String, dynamic> j) => AppSettings(
-        deliveryFee: _int(j['delivery_fee']),
-        minOrder: _int(j['min_order']),
-        isOpen: j['is_open'] == true,
-        restaurantPhone: j['restaurant_phone'] ?? '',
-        restaurantAddress: j['restaurant_address'] ?? '',
-        paymentFeePercent: (j['payment_fee_percent'] as num?)?.toDouble() ?? 2,
-        paymentMode: j['payment_mode'] ?? 'test',
-        paymentProvider: j['payment_provider'] ?? 'simulation',
-        maxQuantityPerItem: j['max_quantity_per_item'] == null ? 999 : _int(j['max_quantity_per_item']),
-        momoUnpaidCancelMinutes:
-            j['momo_unpaid_cancel_minutes'] == null ? 30 : _int(j['momo_unpaid_cancel_minutes']),
-      );
+  /// Frais fixés par l'agrégateur : le réglage admin ne s'applique pas.
+  bool get feesFromAggregator => paymentFeeSource == 'aggregator';
+
+  /// Taux des frais (en %) pour un moyen de paiement mobile money.
+  double feePercentFor(String method) => paymentFeePercentByOperator[method] ?? paymentFeePercent;
+
+  factory AppSettings.fromJson(Map<String, dynamic> j) {
+    final percent = (j['payment_fee_percent'] as num?)?.toDouble() ?? 2;
+    final rawByOp = j['payment_fee_percent_by_operator'];
+    final byOp = <String, double>{'flooz': percent, 'mixx': percent};
+    if (rawByOp is Map) {
+      rawByOp.forEach((k, v) {
+        if (v is num) byOp['$k'] = v.toDouble();
+      });
+    }
+    return AppSettings(
+      deliveryFee: _int(j['delivery_fee']),
+      minOrder: _int(j['min_order']),
+      isOpen: j['is_open'] == true,
+      restaurantPhone: j['restaurant_phone'] ?? '',
+      restaurantAddress: j['restaurant_address'] ?? '',
+      paymentFeePercent: percent,
+      paymentFeePercentByOperator: byOp,
+      paymentFeeSource: j['payment_fee_source'] == 'aggregator' ? 'aggregator' : 'settings',
+      paymentFeePercentSettings: (j['payment_fee_percent_settings'] as num?)?.toDouble(),
+      paymentMode: j['payment_mode'] ?? 'test',
+      paymentProvider: j['payment_provider'] ?? 'simulation',
+      maxQuantityPerItem: j['max_quantity_per_item'] == null ? 999 : _int(j['max_quantity_per_item']),
+      momoUnpaidCancelMinutes:
+          j['momo_unpaid_cancel_minutes'] == null ? 30 : _int(j['momo_unpaid_cancel_minutes']),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'delivery_fee': deliveryFee,
@@ -311,7 +341,8 @@ class AppSettings {
         'is_open': isOpen,
         'restaurant_phone': restaurantPhone,
         'restaurant_address': restaurantAddress,
-        'payment_fee_percent': paymentFeePercent,
+        // Frais fixés par l'agrégateur : on ne renvoie pas le taux (sinon il écraserait le réglage admin).
+        if (!feesFromAggregator) 'payment_fee_percent': paymentFeePercentSettings ?? paymentFeePercent,
         'payment_mode': paymentMode,
         'momo_unpaid_cancel_minutes': momoUnpaidCancelMinutes,
       };

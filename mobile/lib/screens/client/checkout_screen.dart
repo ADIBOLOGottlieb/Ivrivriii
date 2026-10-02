@@ -76,8 +76,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   int _getPaymentFee(CartProvider cart) {
     final settings = _settings;
     if (settings == null || _payment == 'cash') return 0;
-    return paymentFeeFor(cart.subtotal + _getDeliveryFee(), _payment, settings.paymentFeePercent);
+    return paymentFeeFor(cart.subtotal + _getDeliveryFee(), _payment, settings.feePercentFor(_payment));
   }
+
+  /// Taux des frais du moyen sélectionné (commission de l'agrégateur pour cet opérateur).
+  double _feePercent() => _settings?.feePercentFor(_payment) ?? 2;
 
   /// Remplit le champ adresse sans écraser ce que le client a tapé lui-même :
   /// seulement s'il est vide ou s'il contient encore l'adresse pré-remplie précédente.
@@ -317,6 +320,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       RadioListTile<String>(
                         value: e.key,
                         title: Text(e.key == 'cash' && _mode == 'pickup' ? 'Espèces au retrait' : e.value),
+                        subtitle: isMobileMoney(e.key) && _settings != null
+                            ? Text('Frais ${formatPercent(_settings!.feePercentFor(e.key))} %')
+                            : null,
                         secondary: Icon(paymentIcon(e.key), color: AppColors.red),
                       ),
                   ],
@@ -328,7 +334,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 padding: const EdgeInsets.only(top: 8, left: 4),
                 child: Text(
                   '${_settings?.paymentProvider == 'kadev' ? 'Après validation, vous serez redirigé vers la page de paiement sécurisée (KADEV PAY). ' : 'Après validation, vous recevrez une demande de paiement sur votre téléphone : confirmez-la avec votre code PIN. '}'
-                  "Des frais de ${formatPercent(_settings?.paymentFeePercent ?? 2)} % s'ajoutent au total.",
+                  "Des frais de ${formatPercent(_feePercent())} % (commission ${paymentLabel(_payment).split(' ').first}) s'ajoutent au total.",
                   style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12.5),
                 ),
               ),
@@ -355,7 +361,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     _TotalRow('Sous-total', cart.subtotal),
                     if (_mode == 'delivery') _TotalRow('Livraison', deliveryFee),
                     if (_payment != 'cash' && paymentFee > 0)
-                      _TotalRow('Frais mobile money (${formatPercent(_settings?.paymentFeePercent ?? 2)} %)', paymentFee),
+                      _TotalRow('Frais ${paymentLabel(_payment).split(' ').first} (${formatPercent(_feePercent())} %)', paymentFee),
                     const SizedBox(height: 6),
                     _TotalRow('Total', cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0), bold: true),
                   ],

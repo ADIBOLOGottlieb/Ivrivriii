@@ -8,6 +8,7 @@ const { requireAuth, requireAdmin } = require('../auth');
 const { audit } = require('../monitor');
 const providers = require('./providers');
 const core = require('./core');
+const fees = require('./fees');
 const tasks = require('./tasks');
 const { h, maskPhone, csvCell } = require('./util');
 
@@ -89,13 +90,17 @@ function createApiRouter({ presentOrder, loadOrder }) {
 
   router.get('/api/admin/payments/merchant', requireAdmin, h((_req, res) => {
     const name = providers.mainName();
+    const fee = fees.feeInfo();
     res.json({
       provider: name,
       providers: providers.byOperator(),
       display_name: DISPLAY_NAME,
       flooz: maskPhone(process.env.MERCHANT_FLOOZ_NUMBER),
       mixx: maskPhone(process.env.MERCHANT_MIXX_NUMBER),
-      provider_fee_percent: core.PROVIDER_FEE_PERCENT,
+      // Commission appliquée (Flooz, pour compatibilité) et détail par opérateur (fees.js).
+      provider_fee_percent: fee.by_operator.flooz,
+      provider_fee_percent_by_operator: fee.by_operator,
+      provider_fee_source: fee.source,
       settlement: settlementText(name),
     });
   }));
