@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../config.dart';
 import '../../models.dart';
 import '../../services/api.dart';
+import '../../services/delivery_api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../services/order_events.dart';
@@ -210,6 +211,61 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
+  /// Client : « J'ai reçu ma commande » → commande complète ('delivered').
+  Future<void> _confirmReceived() async {
+    final ok = await confirmDialog(
+      context,
+      'Vous avez reçu votre commande ?',
+      'Confirmez seulement si le livreur vous a bien remis votre commande.',
+      confirm: "Oui, je l'ai reçue",
+    );
+    if (!ok || !mounted) return;
+    await _run(() => confirmReceived(widget.orderId), 'Merci ! Commande reçue ✅');
+  }
+
+  /// Admin : choisit un livreur actif puis lui attribue la livraison.
+  Future<void> _assign() async {
+    final o = _order;
+    if (o == null || _busy) return;
+    final driver = await showModalBottomSheet<Driver>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => _DriverPicker(currentId: o.driverId),
+    );
+    if (driver == null || !mounted) return;
+    await _run(() => assignDriver(widget.orderId, driver.id), 'Livraison attribuée à ${driver.name}');
+  }
+
+  /// Admin : retire le livreur de la commande.
+  Future<void> _unassign() async {
+    final o = _order;
+    if (o == null) return;
+    final ok = await confirmDialog(
+      context,
+      'Retirer le livreur ?',
+      '${o.driverName ?? 'Le livreur'} ne sera plus chargé de cette livraison.',
+      confirm: 'Retirer',
+      danger: true,
+    );
+    if (!ok || !mounted) return;
+    await _run(() => assignDriver(widget.orderId, null), 'Livreur retiré');
+  }
+
+  /// Admin : passe la commande « Livrée » sans attendre le livreur ni le client.
+  Future<void> _forceDelivered() async {
+    final ok = await confirmDialog(
+      context,
+      'Marquer comme livrée ?',
+      "Le livreur n'a pas encore indiqué « Livraison faite ». "
+          'La commande sera terminée sans la confirmation du client.',
+      confirm: 'Forcer',
+      danger: true,
+    );
+    if (!ok || !mounted) return;
+    await _run(() => Api.instance.setOrderStatus(widget.orderId, 'delivered'), 'Commande marquée comme livrée');
+  }
+
   /// Admin : remboursement d'une commande payée puis annulée.
   Future<void> _refund() async {
     final ctrl = TextEditingController();
@@ -285,7 +341,35 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
-                  FadeSlideIn(child: _StatusHeader(order: o)),
+                  FadeSlideIn(child: _StatusHeader(order: o, admin: widget.admin)),
+                  // Client : le livreur dit avoir livré → bouton « J'ai reçu ma commande ».
+                  if (!widget.admin && o.awaitingReceipt) ...[
+                    const SizedBox(height: 16),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 20),
+                      child: _ReceiptPrompt(order: o, busy: _busy, onConfirm: _confirmReceived),
+                    ),
+                  ],
+                  if (!widget.admin && o.isDelivery && o.status == 'delivered' && o.receivedAt != null) ...[
+                    const SizedBox(height: 16),
+                    _ReceivedBanner(receivedAt: o.receivedAt!),
+                  ],
+                  if (!widget.admin && o.isDelivery && o.hasDriver && !o.isFinished) ...[
+                    const SizedBox(height: 16),
+                    FadeSlideIn(delay: const Duration(milliseconds: 30), child: _DriverCard(order: o)),
+                  ],
+                  if (widget.admin && o.isDelivery && !o.isCancelled) ...[
+                    const SizedBox(height: 16),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 30),
+                      child: _AdminDriverSection(
+                        order: o,
+                        busy: _busy,
+                        onAssign: _assign,
+                        onRemove: _unassign,
+                      ),
+                    ),
+                  ],
                   if (isMobileMoney(o.paymentMethod) && (!o.isCancelled || o.isPaid || o.isRefunded)) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
@@ -370,16 +454,27 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Widget? _actions(Order o) {
     final buttons = <Widget>[];
     if (widget.admin) {
-      final next = nextStatus(o.status, o.isDelivery);
+      // En livraison, « Livrée » n'est proposée qu'après « Livraison faite » du livreur.
+      final next = adminNextStatus(o.status, o.isDelivery, driverDelivered: o.driverDeliveredAt != null);
       final awaitingPayment = isMobileMoney(o.paymentMethod) && !o.isPaid;
       if (next != null && o.status != 'cancelled' && !awaitingPayment) {
+        final onBehalf = next == 'delivered' && o.awaitingReceipt;
         buttons.add(FilledButton.icon(
           onPressed: _busy
               ? null
               : () => _run(() => Api.instance.setOrderStatus(o.id, next),
-                  'Statut : ${statusLabel(next, delivery: o.isDelivery)}'),
+                  onBehalf ? 'Réception confirmée' : 'Statut : ${statusLabel(next, delivery: o.isDelivery)}'),
           icon: Icon(statusIcon(next)),
-          label: Text('Passer à « ${statusLabel(next, delivery: o.isDelivery)} »'),
+          label: Text(onBehalf
+              ? 'Confirmer la réception (pour le client)'
+              : 'Passer à « ${statusLabel(next, delivery: o.isDelivery)} »'),
+        ));
+      }
+      if (o.isDelivery && o.status == 'delivering' && o.driverDeliveredAt == null) {
+        buttons.add(TextButton.icon(
+          onPressed: _busy ? null : _forceDelivered,
+          icon: const Icon(Icons.done_all_rounded),
+          label: const Text('Marquer comme livrée (forcer)'),
         ));
       }
       if (!o.isFinished) {
@@ -418,9 +513,18 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
 class _StatusHeader extends StatelessWidget {
   final Order order;
-  const _StatusHeader({required this.order});
+  final bool admin;
+  const _StatusHeader({required this.order, this.admin = false});
+
+  /// Statut affiché : « Livrée par le livreur » tant que le client n'a pas confirmé.
+  String get _step => order.awaitingReceipt ? driverDeliveredStep : order.status;
 
   String get _message {
+    if (order.awaitingReceipt) {
+      return admin
+          ? 'Le livreur a indiqué « Livraison faite ». En attente du « Reçu » du client.'
+          : 'Le livreur indique vous avoir livré. Confirmez la réception ci-dessous.';
+    }
     switch (order.status) {
       case 'pending':
         return 'Le restaurant va bientôt confirmer votre commande.';
@@ -431,7 +535,12 @@ class _StatusHeader extends StatelessWidget {
       case 'ready':
         return order.isDelivery ? 'Votre commande attend le livreur.' : 'Votre commande vous attend au restaurant !';
       case 'delivering':
-        return 'Le livreur est en route vers vous 🛵';
+        if (admin) {
+          return order.hasDriver ? '${order.driverName ?? 'Le livreur'} est en route 🛵' : 'En route vers le client 🛵';
+        }
+        return order.hasDriver
+            ? '${order.driverName ?? 'Votre livreur'} est en route vers vous 🛵'
+            : 'Le livreur est en route vers vous 🛵';
       case 'delivered':
         return 'Bon appétit ! Merci de votre confiance.';
       case 'cancelled':
@@ -442,7 +551,8 @@ class _StatusHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = statusColor(order.status);
+    final step = _step;
+    final color = statusColor(step);
     // Le bandeau change de couleur en douceur à chaque changement de statut.
     return AnimatedContainer(
       duration: const Duration(milliseconds: 600),
@@ -464,7 +574,7 @@ class _StatusHeader extends StatelessWidget {
                 turns: Tween(begin: 0.75, end: 1.0).animate(anim),
                 child: ScaleTransition(scale: anim, child: child),
               ),
-              child: Icon(statusIcon(order.status), key: ValueKey(order.status), color: Colors.white, size: 30),
+              child: Icon(statusIcon(step), key: ValueKey(step), color: Colors.white, size: 30),
             ),
           ),
           const SizedBox(width: 14),
@@ -474,11 +584,11 @@ class _StatusHeader extends StatelessWidget {
               layoutBuilder: (current, previous) =>
                   Stack(alignment: Alignment.topLeft, children: [...previous, ?current]),
               child: Column(
-              key: ValueKey(order.status),
+              key: ValueKey(step),
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  statusLabel(order.status, delivery: order.isDelivery),
+                  statusLabel(step, delivery: order.isDelivery),
                   style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 4),
@@ -500,10 +610,23 @@ class _Timeline extends StatelessWidget {
   final Order order;
   const _Timeline({required this.order});
 
+  /// Libellé de l'étape, avec l'heure pour les étapes de livraison franchies.
+  String _label(String step) {
+    final label = trackingLabel(step, order.isDelivery);
+    DateTime? at;
+    if (step == 'delivering') at = order.pickedUpAt;
+    if (step == driverDeliveredStep) at = order.driverDeliveredAt;
+    if (step == 'delivered' && order.isDelivery) at = order.receivedAt;
+    return at == null ? label : '$label • ${formatTime(at)}';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final steps = statusSteps(order.isDelivery);
-    final current = steps.indexOf(order.status);
+    final scheme = Theme.of(context).colorScheme;
+    // Étapes à venir : voile de onSurface, visible en clair comme en sombre.
+    final idle = scheme.onSurface.withValues(alpha: 0.10);
+    final steps = trackingSteps(order.isDelivery);
+    final current = trackingIndex(order.status, order.isDelivery, driverDelivered: order.driverDeliveredAt != null);
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -522,7 +645,7 @@ class _Timeline extends StatelessWidget {
                         height: 28,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: i <= current ? AppColors.red : Colors.grey.shade200,
+                          color: i <= current ? AppColors.red : idle,
                           boxShadow: i == current
                               ? [BoxShadow(color: AppColors.red.withValues(alpha: 0.4), blurRadius: 10)]
                               : null,
@@ -530,7 +653,7 @@ class _Timeline extends StatelessWidget {
                         child: Icon(
                           i < current ? Icons.check_rounded : statusIcon(steps[i]),
                           size: 15,
-                          color: i <= current ? Colors.white : Colors.grey.shade500,
+                          color: i <= current ? Colors.white : scheme.onSurfaceVariant,
                         ),
                       ),
                       if (i < steps.length - 1)
@@ -539,7 +662,7 @@ class _Timeline extends StatelessWidget {
                           height: 22,
                           margin: const EdgeInsets.symmetric(vertical: 2),
                           alignment: Alignment.topCenter,
-                          color: Colors.grey.shade200,
+                          color: idle,
                           // La ligne se « remplit » jusqu'à l'étape en cours.
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 500),
@@ -563,7 +686,7 @@ class _Timeline extends StatelessWidget {
                           fontWeight: i == current ? FontWeight.w800 : FontWeight.w500,
                           color: i <= current ? Theme.of(context).colorScheme.onSurface : AppColors.muted,
                         ),
-                        child: Text(statusLabel(steps[i], delivery: order.isDelivery)),
+                        child: Text(_label(steps[i])),
                       ),
                     ),
                   ),
@@ -778,6 +901,337 @@ class _PaymentCard extends StatelessWidget {
                 ),
               ],
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _driverLabel(Order o) => (o.driverName ?? '').trim().isEmpty ? 'Le livreur' : o.driverName!.trim();
+
+void _call(String phone) => launchUrl(Uri(scheme: 'tel', path: phone.replaceAll(' ', '')));
+
+/// Client : bandeau très visible quand le livreur a indiqué « Livraison faite ».
+class _ReceiptPrompt extends StatelessWidget {
+  final Order order;
+  final bool busy;
+  final VoidCallback onConfirm;
+  const _ReceiptPrompt({required this.order, required this.busy, required this.onConfirm});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    const accent = AppColors.green;
+    final at = order.driverDeliveredAt;
+    final phone = (order.driverPhone ?? '').trim();
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: accent, width: 2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.where_to_vote_rounded, color: accent, size: 34),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Le livreur indique vous avoir livré',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: scheme.onSurface),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${_driverLabel(order)} a indiqué « Livraison faite »${at != null ? ' à ${formatTime(at)}' : ''}. '
+            'Vous avez bien votre commande ? Confirmez-le pour la terminer.',
+            style: TextStyle(color: scheme.onSurfaceVariant, height: 1.35),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: accent,
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(58),
+              textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+            ),
+            onPressed: busy ? null : onConfirm,
+            icon: busy
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                  )
+                : const Icon(Icons.check_circle_rounded, size: 26),
+            label: const Text("J'ai reçu ma commande"),
+          ),
+          if (phone.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => _call(phone),
+              icon: const Icon(Icons.call_rounded),
+              label: const Text("Pas reçue ? Appeler le livreur"),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Client : commande reçue (« Reçu » confirmé).
+class _ReceivedBanner extends StatelessWidget {
+  final DateTime receivedAt;
+  const _ReceivedBanner({required this.receivedAt});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: AppColors.green.withValues(alpha: 0.12),
+      child: ListTile(
+        leading: const Icon(Icons.verified_rounded, color: AppColors.green, size: 30),
+        title: Text(
+          'Commande reçue le ${formatDateTime(receivedAt)} ✅',
+          style: TextStyle(fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
+        ),
+      ),
+    );
+  }
+}
+
+/// Client : livreur attribué (nom + bouton Appeler).
+class _DriverCard extends StatelessWidget {
+  final Order order;
+  const _DriverCard({required this.order});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final phone = (order.driverPhone ?? '').trim();
+    return Card(
+      child: ListTile(
+        leading: const CircleAvatar(
+          backgroundColor: AppColors.yellow,
+          child: Text('🛵', style: TextStyle(fontSize: 20)),
+        ),
+        title: Text('Votre livreur', style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+        subtitle: Text(
+          _driverLabel(order),
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: scheme.onSurface),
+        ),
+        trailing: phone.isEmpty
+            ? null
+            : FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.green,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(0, 40),
+                ),
+                onPressed: () => _call(phone),
+                icon: const Icon(Icons.call_rounded, size: 18),
+                label: const Text('Appeler'),
+              ),
+      ),
+    );
+  }
+}
+
+/// Admin : livreur attribué, attribution / changement / retrait, état de la livraison.
+class _AdminDriverSection extends StatelessWidget {
+  final Order order;
+  final bool busy;
+  final VoidCallback onAssign;
+  final VoidCallback onRemove;
+  const _AdminDriverSection({
+    required this.order,
+    required this.busy,
+    required this.onAssign,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final o = order;
+    final phone = (o.driverPhone ?? '').trim();
+    // Attribution possible quand la commande est prête ou en livraison (pas après « Livraison faite »).
+    final canAssign = (o.status == 'ready' || o.status == 'delivering') && !o.awaitingReceipt;
+    String? state;
+    Color stateColor = scheme.onSurfaceVariant;
+    if (o.awaitingReceipt) {
+      state = 'Livrée par ${_driverLabel(o)} à ${formatTime(o.driverDeliveredAt!)} — en attente du « Reçu » client';
+      stateColor = const Color(0xFFE08A00);
+    } else if (o.status == 'delivered') {
+      final by = o.hasDriver ? ' par ${_driverLabel(o)}' : '';
+      state = o.receivedAt != null
+          ? 'Livrée$by • reçue par le client le ${formatDateTime(o.receivedAt!)}'
+          : 'Livrée$by';
+      stateColor = AppColors.green;
+    } else if (o.hasDriver && o.pickedUpAt != null) {
+      state = 'Prise en charge à ${formatTime(o.pickedUpAt!)}';
+    } else if (!o.hasDriver && !canAssign) {
+      state = 'Attribution possible dès que la commande est prête.';
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.delivery_dining_rounded, color: AppColors.red),
+                const SizedBox(width: 10),
+                Text('Livreur', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: scheme.onSurface)),
+                const Spacer(),
+                if (o.hasDriver && phone.isNotEmpty)
+                  IconButton.filled(
+                    tooltip: 'Appeler le livreur',
+                    style: IconButton.styleFrom(backgroundColor: AppColors.green, foregroundColor: Colors.white),
+                    icon: const Icon(Icons.call_rounded, size: 20),
+                    onPressed: () => _call(phone),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              o.hasDriver ? '🛵 ${_driverLabel(o)}${phone.isNotEmpty ? ' • $phone' : ''}' : 'Aucun',
+              style: TextStyle(
+                fontWeight: o.hasDriver ? FontWeight.w700 : FontWeight.w500,
+                color: o.hasDriver ? scheme.onSurface : scheme.onSurfaceVariant,
+              ),
+            ),
+            if (state != null) ...[
+              const SizedBox(height: 6),
+              Text(state, style: TextStyle(color: stateColor, fontWeight: FontWeight.w600, height: 1.3)),
+            ],
+            if (canAssign) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: busy ? null : onAssign,
+                      icon: Icon(o.hasDriver ? Icons.swap_horiz_rounded : Icons.person_add_alt_1_rounded),
+                      label: Text(o.hasDriver ? 'Changer' : 'Attribuer'),
+                    ),
+                  ),
+                  if (o.hasDriver) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
+                        onPressed: busy ? null : onRemove,
+                        icon: const Icon(Icons.person_remove_rounded),
+                        label: const Text('Retirer'),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Admin : liste des livreurs actifs (avec leurs livraisons en cours) ; renvoie le livreur choisi.
+class _DriverPicker extends StatefulWidget {
+  final int? currentId;
+  const _DriverPicker({this.currentId});
+
+  @override
+  State<_DriverPicker> createState() => _DriverPickerState();
+}
+
+class _DriverPickerState extends State<_DriverPicker> {
+  late Future<List<Driver>> _future = fetchDrivers();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Text('Choisir un livreur',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: scheme.onSurface)),
+            ),
+            Flexible(
+              child: FutureBuilder<List<Driver>>(
+                future: _future,
+                builder: (context, snap) {
+                  if (snap.hasError) {
+                    return SingleChildScrollView(
+                      child: ErrorRetry(
+                        error: snap.error!,
+                        onRetry: () => setState(() => _future = fetchDrivers()),
+                      ),
+                    );
+                  }
+                  if (!snap.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final drivers = snap.data!.where((d) => d.active).toList()
+                    ..sort((a, b) => a.activeDeliveries.compareTo(b.activeDeliveries));
+                  if (drivers.isEmpty) {
+                    return const SingleChildScrollView(
+                      child: EmptyState(
+                        emoji: '🛵',
+                        title: 'Aucun livreur actif',
+                        message: 'Ajoutez un livreur depuis « Plus » → « Livreurs ».',
+                      ),
+                    );
+                  }
+                  return ListView.builder(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.only(bottom: 12),
+                    itemCount: drivers.length,
+                    itemBuilder: (_, i) {
+                      final d = drivers[i];
+                      final current = d.id == widget.currentId;
+                      final n = d.activeDeliveries;
+                      return ListTile(
+                        enabled: !current,
+                        leading: CircleAvatar(
+                          backgroundColor: AppColors.yellow,
+                          child: Text(
+                            d.name.isEmpty ? '?' : d.name[0].toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.black87),
+                          ),
+                        ),
+                        title: Text(d.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                        subtitle: Text(
+                          '${d.phone} • ${n == 0 ? 'libre' : '$n livraison${n > 1 ? 's' : ''} en cours'}'
+                          '${current ? ' • actuel' : ''}',
+                        ),
+                        trailing: Icon(
+                          n == 0 ? Icons.check_circle_outline_rounded : Icons.delivery_dining_rounded,
+                          color: n == 0 ? AppColors.green : scheme.onSurfaceVariant,
+                        ),
+                        onTap: current ? null : () => Navigator.pop(context, d),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),

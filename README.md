@@ -152,7 +152,20 @@ Suivi dans l'admin (**Plus → Encaissements**) : pour chaque paiement, montant 
 
 Toute action sur l'argent (validation, rejet, reversement, remboursement) est inscrite au journal d'audit avec l'agent qui l'a faite.
 
-## 6. Hébergement sur Render et données
+## 6. Livreurs
+
+L'admin crée les comptes livreurs (**Plus → Livreurs** : nom, téléphone, mot de passe) ; un livreur se connecte avec son téléphone et arrive directement dans l'espace livreur.
+
+Circuit d'une commande en livraison :
+1. La cuisine passe la commande à « Prête » : elle apparaît chez tous les livreurs dans **À livrer** (numéro du client, adresse, montant à encaisser ou « Déjà payé »). Une commande mobile money ne peut être prise qu'une fois payée.
+2. Un livreur appuie sur **Je prends cette livraison** (ou l'admin l'attribue depuis le détail de la commande) : elle passe « En livraison ».
+3. Un appui sur le client ouvre **Google Maps en guidage moto** vers sa position (ou vers son adresse s'il n'a pas de position).
+4. Le livreur appuie sur **Livraison faite**, puis le client appuie sur **J'ai reçu ma commande** : la commande est **complète**.
+5. Sans « Reçu » du client, la commande est confirmée automatiquement après 12 h (réglable : Paramètres → Livraison).
+
+Un livreur désactivé ne peut plus se connecter ; ses livraisons en cours restent visibles par l'admin, qui peut les réattribuer. Toutes ces actions sont inscrites au journal d'audit.
+
+## 7. Hébergement sur Render et données
 
 `render.yaml` décrit le service (offre gratuite). ⚠️ **Sur l'offre gratuite, le disque n'est pas persistant** : à chaque redémarrage ou déploiement (et à chaque réveil après 15 min d'inactivité), la base de données **et** le dossier `uploads/` (photos du menu, photos de profil dans `uploads/avatars/`) sont effacés. Pour la production — et surtout dès que de vrais paiements circulent, sinon **l'historique des paiements est perdu** — utilisez un disque persistant (offre payante Render, `DB_PATH` sur le disque) ou un serveur avec stockage durable, et sauvegardez régulièrement la base.
 
@@ -170,6 +183,9 @@ Autres points avant la production :
 | POST/GET | `/api/orders` · GET `/api/orders/:id` · POST `/api/orders/:id/cancel` | client |
 | POST | `/api/orders/:id/payments` · GET `/payments/current` · POST `/payments/current/abandon` · `/payments/current/simulate` | client |
 | GET/POST | `/api/admin/payments/review` · `/api/admin/payments/:id/validate` · `/:id/reject` · `/api/admin/payments/recent` · `/merchant` · POST `/reconcile` | admin |
+| GET/POST | `/api/driver/orders?scope=` (available, mine, history) · POST `/api/driver/orders/:id/take` · `/delivered` · `/release` · GET `/api/driver/stats` | livreur |
+| POST | `/api/orders/:id/received` | client |
+| GET/POST/PATCH | `/api/admin/drivers[/:id]` · PATCH `/api/admin/orders/:id/assign` | admin |
 | GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
 | GET | `/api/admin/stats`, `/api/admin/orders?status=`, `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
 | PATCH | `/api/admin/orders/:id/status` (pas de cuisine avant paiement mobile money) | admin |

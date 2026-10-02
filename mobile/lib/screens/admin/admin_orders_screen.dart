@@ -204,7 +204,11 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
                     itemBuilder: (_, i) {
                       final o = orders[i];
-                      final next = o.status == 'cancelled' ? null : nextStatus(o.status, o.isDelivery);
+                      // En livraison : « Livrée » seulement après « Livraison faite » du livreur
+                      // (sinon l'admin force depuis le détail de la commande).
+                      final next = o.status == 'cancelled'
+                          ? null
+                          : adminNextStatus(o.status, o.isDelivery, driverDelivered: o.driverDeliveredAt != null);
                       // Use ValueKey for list item tracking (prevents rebuild jank)
                       return FadeSlideIn(
                         key: ValueKey('$_filter-${o.id}'),

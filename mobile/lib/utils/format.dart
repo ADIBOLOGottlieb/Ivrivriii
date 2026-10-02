@@ -136,6 +136,8 @@ String statusLabel(String status, {bool delivery = true}) {
       return delivery ? 'Prête' : 'Prête à récupérer';
     case 'delivering':
       return 'En livraison';
+    case driverDeliveredStep:
+      return 'Livrée par le livreur';
     case 'delivered':
       return delivery ? 'Livrée' : 'Récupérée';
     case 'cancelled':
@@ -156,6 +158,8 @@ Color statusColor(String status) {
       return Colors.teal.shade600;
     case 'delivering':
       return Colors.indigo.shade500;
+    case driverDeliveredStep:
+      return Colors.teal.shade700;
     case 'delivered':
       return AppColors.green;
     case 'cancelled':
@@ -176,6 +180,8 @@ IconData statusIcon(String status) {
       return Icons.shopping_bag_rounded;
     case 'delivering':
       return Icons.delivery_dining_rounded;
+    case driverDeliveredStep:
+      return Icons.where_to_vote_rounded;
     case 'delivered':
       return Icons.check_circle_rounded;
     case 'cancelled':
@@ -195,6 +201,34 @@ String? nextStatus(String status, bool delivery) {
   final i = steps.indexOf(status);
   if (i < 0 || i == steps.length - 1) return null;
   return steps[i + 1];
+}
+
+/// Étape d'affichage (pas un statut serveur) : le livreur a indiqué « Livraison faite »,
+/// la commande reste 'delivering' en attendant le « Reçu » du client.
+const driverDeliveredStep = 'driver_delivered';
+
+/// Étapes de la frise de suivi : en livraison, « Livrée par le livreur » puis « Reçue ».
+List<String> trackingSteps(bool delivery) => delivery
+    ? ['pending', 'confirmed', 'preparing', 'ready', 'delivering', driverDeliveredStep, 'delivered']
+    : statusSteps(false);
+
+/// Position de la commande dans [trackingSteps] (-1 si annulée ou inconnue).
+int trackingIndex(String status, bool delivery, {bool driverDelivered = false}) {
+  final steps = trackingSteps(delivery);
+  if (delivery && status == 'delivering' && driverDelivered) return steps.indexOf(driverDeliveredStep);
+  return steps.indexOf(status);
+}
+
+/// Libellé d'une étape de la frise (« Reçue » pour la fin d'une livraison).
+String trackingLabel(String step, bool delivery) =>
+    delivery && step == 'delivered' ? 'Reçue' : statusLabel(step, delivery: delivery);
+
+/// Prochaine étape proposée par le bouton principal de l'admin. En livraison, « Livrée »
+/// n'est proposée qu'après « Livraison faite » du livreur (sinon : action « forcer » à part).
+String? adminNextStatus(String status, bool delivery, {bool driverDelivered = false}) {
+  final next = nextStatus(status, delivery);
+  if (delivery && next == 'delivered' && !driverDelivered) return null;
+  return next;
 }
 
 const categoryIcons = <String, String>{

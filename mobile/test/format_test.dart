@@ -71,6 +71,27 @@ void main() {
     expect(nextStatus('ready', true), 'delivering');
     expect(nextStatus('ready', false), 'delivered');
     expect(nextStatus('delivered', true), isNull);
+    expect(nextStatus('delivering', true), 'delivered');
+  });
+
+  test('livraison : « Livraison faite » (livreur) puis « Reçu » (client)', () {
+    expect(trackingSteps(true), [
+      'pending', 'confirmed', 'preparing', 'ready', 'delivering', driverDeliveredStep, 'delivered',
+    ]);
+    expect(trackingSteps(false), statusSteps(false));
+    expect(trackingIndex('delivering', true), 4);
+    expect(trackingIndex('delivering', true, driverDelivered: true), 5);
+    expect(trackingIndex('delivered', true), 6);
+    expect(trackingIndex('delivered', false), 4);
+    expect(trackingIndex('cancelled', true), -1);
+    expect(trackingLabel('delivered', true), 'Reçue');
+    expect(trackingLabel('delivered', false), 'Récupérée');
+    expect(statusLabel(driverDeliveredStep), 'Livrée par le livreur');
+    // L'admin ne passe plus « Livrée » tant que le livreur n'a pas confirmé.
+    expect(adminNextStatus('delivering', true), isNull);
+    expect(adminNextStatus('delivering', true, driverDelivered: true), 'delivered');
+    expect(adminNextStatus('ready', true), 'delivering');
+    expect(adminNextStatus('ready', false), 'delivered'); // à emporter : inchangé
   });
 
   test('le panier calcule quantités et sous-total', () {

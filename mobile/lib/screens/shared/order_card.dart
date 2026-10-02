@@ -54,6 +54,23 @@ class OrderCard extends StatelessWidget {
               Text(summary,
                   maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.muted)),
               if (badge != null) ...[const SizedBox(height: 8), badge],
+              if (order.hasDriver || order.awaitingReceipt) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (order.hasDriver && !order.isCancelled)
+                      _pill(
+                        context,
+                        '🛵 ${(order.driverName ?? '').trim().isEmpty ? 'Livreur' : order.driverName!.trim()}',
+                        Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    if (order.awaitingReceipt)
+                      _pill(context, 'À confirmer', const Color(0xFFE08A00), icon: Icons.where_to_vote_rounded),
+                  ],
+                ),
+              ],
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -69,6 +86,32 @@ class OrderCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Petite pastille (livreur, réception à confirmer), lisible en clair et en sombre.
+  Widget _pill(BuildContext context, String label, Color color, {IconData? icon}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[Icon(icon, size: 14, color: color), const SizedBox(width: 4)],
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
       ),
     );
   }

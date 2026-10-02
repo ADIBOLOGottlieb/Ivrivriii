@@ -7,12 +7,14 @@ import '../../models_admin.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
 import '../../services/api.dart';
+import '../../services/delivery_api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import '../client/gps_picker_screen.dart';
 import '../client/profile_screen.dart';
 import 'collections_screen.dart';
+import 'drivers_screen.dart';
 import 'payments_review_screen.dart';
 
 class AdminMoreScreen extends StatelessWidget {
@@ -43,6 +45,13 @@ class AdminMoreScreen extends StatelessWidget {
                   title: const Text('Clients'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () => open(const CustomersScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delivery_dining_rounded, color: AppColors.red),
+                  title: const Text('Livreurs'),
+                  subtitle: const Text('Comptes, activation, livraisons en cours'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => open(const DriversScreen()),
                 ),
                 if (user != null)
                   ListTile(
@@ -120,6 +129,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _address = TextEditingController();
   final _cancelMinutes = TextEditingController();
   final _paymentFee = TextEditingController(); // réglage admin (si l'agrégateur n'impose pas ses frais)
+  // Confirmation automatique de la réception (heures) : hors AppSettings, lu et enregistré à part.
+  final _autoConfirmHours = TextEditingController();
+  int? _loadedAutoConfirmHours;
   late final Future<MerchantInfo> _merchant = fetchMerchant();
   AppSettings? _current; // réglages chargés : conserve les champs non modifiés ici
   // Position du restaurant (départ des itinéraires de livraison) ; null si non définie.
@@ -140,13 +152,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    for (final c in [_fee, _min, _phone, _address, _cancelMinutes, _paymentFee]) {
+    for (final c in [_fee, _min, _phone, _address, _cancelMinutes, _paymentFee, _autoConfirmHours]) {
       c.dispose();
     }
     super.dispose();
   }
 
   Future<void> _load() async {
+    _loadAutoConfirm();
     try {
       final s = await Api.instance.settings();
       if (!mounted) return;
@@ -167,6 +180,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = e);
     }
+  }
+
+  /// Lit le délai de confirmation automatique (valeur par défaut si le serveur ne l'expose pas).
+  Future<void> _loadAutoConfirm() async {
+    int hours;
+    try {
+      hours = await fetchDeliveryAutoConfirmHours();
+    } catch (_) {
+      hours = defaultDeliveryAutoConfirmHours;
+    }
+    if (!mounted) return;
+    setState(() {
+      _loadedAutoConfirmHours = hours;
+      _autoConfirmHours.text = '$hours';
+    });
   }
 
   Future<void> _save() async {
@@ -199,6 +227,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         maxQuantityPerItem: _current?.maxQuantityPerItem ?? 999,
         momoUnpaidCancelMinutes: int.parse(_cancelMinutes.text.trim()),
       ));
+      // Réglage absent de AppSettings : envoyé seul, uniquement s'il a changé.
+      final hours = int.tryParse(_autoConfirmHours.text.trim());
+      if (hours != null && hours != _loadedAutoConfirmHours) {
+        await saveDeliveryAutoConfirmHours(hours);
+        _loadedAutoConfirmHours = hours;
+      }
       if (!mounted) return;
       showMessage(context, 'Paramètres enregistrés');
       Navigator.pop(context);
@@ -395,6 +429,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 14),
                   _positionTile(),
+                  const SizedBox(height: 24),
+                  const Text('Livraison', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _autoConfirmHours,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Confirmation automatique de la réception après',
+                      helperText: 'Si le client ne confirme pas « Reçu » après « Livraison faite » du livreur, '
+                          'la commande est terminée automatiquement. Entre 1 et 72 heures.',
+                      helperMaxLines: 3,
+                      suffixText: 'h',
+                    ),
+                    validator: (v) {
+                      final n = int.tryParse(v?.trim() ?? '');
+                      if (n == null || n < 1 || n > 72) return 'Entre 1 et 72 heures';
+                      return null;
+                    },
+                  ),
                   const SizedBox(height: 24),
                   const Text('Paiement mobile money', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
