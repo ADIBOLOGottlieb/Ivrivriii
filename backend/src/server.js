@@ -225,6 +225,8 @@ app.get('/api/settings', h((_req, res) => {
     payment_provider: payments.paymentInfo().provider,
     max_quantity_per_item: MAX_QUANTITY_PER_ITEM,
     momo_unpaid_cancel_minutes: s.momo_unpaid_cancel_minutes,
+    restaurant_lat: s.restaurant_lat,
+    restaurant_lng: s.restaurant_lng,
   });
 }));
 
@@ -525,7 +527,36 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
   const text = ['restaurant_phone', 'restaurant_address'];
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   const changed = {};
+  // Position du restaurant : les deux coordonnées ensemble (ou aucune), null pour effacer.
+  const hasLat = req.body?.restaurant_lat !== undefined;
+  const hasLng = req.body?.restaurant_lng !== undefined;
+  let position;
+  if (hasLat || hasLng) {
+    if (hasLat !== hasLng) throw httpError(400, 'Position du restaurant : latitude et longitude doivent être envoyées ensemble');
+    const rawLat = req.body.restaurant_lat;
+    const rawLng = req.body.restaurant_lng;
+    if (rawLat === null && rawLng === null) {
+      position = null;
+    } else {
+      const toNum = (v) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+      const lat = toNum(rawLat);
+      const lng = toNum(rawLng);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) throw httpError(400, 'Latitude du restaurant invalide (entre -90 et 90)');
+      if (!Number.isFinite(lng) || lng < -180 || lng > 180) throw httpError(400, 'Longitude du restaurant invalide (entre -180 et 180)');
+      position = { lat, lng };
+    }
+  }
   transaction(() => {
+    if (position !== undefined) {
+      if (position === null) {
+        db.prepare("DELETE FROM settings WHERE key IN ('restaurant_lat', 'restaurant_lng')").run();
+      } else {
+        upsert.run('restaurant_lat', String(position.lat));
+        upsert.run('restaurant_lng', String(position.lng));
+      }
+      changed.restaurant_lat = position ? position.lat : null;
+      changed.restaurant_lng = position ? position.lng : null;
+    }
     for (const [key, [min, max]] of Object.entries(numeric)) {
       if (req.body?.[key] === undefined) continue;
       const v = Number(req.body[key]);

@@ -175,6 +175,12 @@ function transaction(fn) {
   }
 }
 
+function optionalNumber(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function getSettings() {
   const rows = db.prepare('SELECT key, value FROM settings').all();
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
@@ -193,6 +199,9 @@ function getSettings() {
     high_amount_alert: Number(s.high_amount_alert ?? 100000),
     // Annulation automatique d'une commande mobile money non payée (minutes).
     momo_unpaid_cancel_minutes: Number(s.momo_unpaid_cancel_minutes ?? 30),
+    // Position du restaurant (départ des itinéraires de livraison) : null tant que non définie.
+    restaurant_lat: optionalNumber(s.restaurant_lat),
+    restaurant_lng: optionalNumber(s.restaurant_lng),
   };
 }
 

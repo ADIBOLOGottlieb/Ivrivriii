@@ -272,6 +272,9 @@ class AppSettings {
   final bool isOpen;
   final String restaurantPhone;
   final String restaurantAddress;
+  // Position du restaurant (départ des itinéraires de livraison) ; null tant que l'admin ne l'a pas placée.
+  final double? restaurantLat;
+  final double? restaurantLng;
   /// Taux Flooz (compatibilité) : préférer [feePercentFor].
   final double paymentFeePercent;
   /// Taux des frais par opérateur ('flooz', 'mixx') = commission de l'agrégateur ou réglage admin.
@@ -291,6 +294,8 @@ class AppSettings {
     required this.isOpen,
     required this.restaurantPhone,
     required this.restaurantAddress,
+    this.restaurantLat,
+    this.restaurantLng,
     this.paymentFeePercent = 2,
     Map<String, double>? paymentFeePercentByOperator,
     this.paymentFeeSource = 'settings',
@@ -323,6 +328,8 @@ class AppSettings {
       isOpen: j['is_open'] == true,
       restaurantPhone: j['restaurant_phone'] ?? '',
       restaurantAddress: j['restaurant_address'] ?? '',
+      restaurantLat: (j['restaurant_lat'] as num?)?.toDouble(),
+      restaurantLng: (j['restaurant_lng'] as num?)?.toDouble(),
       paymentFeePercent: percent,
       paymentFeePercentByOperator: byOp,
       paymentFeeSource: j['payment_fee_source'] == 'aggregator' ? 'aggregator' : 'settings',
@@ -341,6 +348,8 @@ class AppSettings {
         'is_open': isOpen,
         'restaurant_phone': restaurantPhone,
         'restaurant_address': restaurantAddress,
+        'restaurant_lat': restaurantLat,
+        'restaurant_lng': restaurantLng,
         // Frais fixés par l'agrégateur : on ne renvoie pas le taux (sinon il écraserait le réglage admin).
         if (!feesFromAggregator) 'payment_fee_percent': paymentFeePercentSettings ?? paymentFeePercent,
         'payment_mode': paymentMode,

@@ -10,6 +10,7 @@ import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
+import '../client/gps_picker_screen.dart';
 import '../client/profile_screen.dart';
 import 'collections_screen.dart';
 import 'payments_review_screen.dart';
@@ -121,6 +122,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _paymentFee = TextEditingController(); // réglage admin (si l'agrégateur n'impose pas ses frais)
   late final Future<MerchantInfo> _merchant = fetchMerchant();
   AppSettings? _current; // réglages chargés : conserve les champs non modifiés ici
+  // Position du restaurant (départ des itinéraires de livraison) ; null si non définie.
+  double? _lat;
+  double? _lng;
+  String? _positionAddress; // adresse renvoyée par la carte (session en cours)
+  bool _savingPosition = false;
   bool _isOpen = true;
   bool _loaded = false;
   bool _saving = false;
@@ -152,6 +158,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _isOpen = s.isOpen;
         _cancelMinutes.text = '${s.momoUnpaidCancelMinutes}';
         _paymentFee.text = formatPercent(s.paymentFeePercentSettings ?? s.paymentFeePercent);
+        _lat = s.restaurantLat;
+        _lng = s.restaurantLng;
         _current = s;
         _loaded = true;
         _error = null;
@@ -177,6 +185,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         isOpen: _isOpen,
         restaurantPhone: _phone.text.trim(),
         restaurantAddress: _address.text.trim(),
+        // Position enregistrée à part (bouton « Placer sur la carte ») : renvoyée telle quelle.
+        restaurantLat: _lat,
+        restaurantLng: _lng,
         // Champs non modifiés ici : on renvoie les valeurs chargées pour ne pas les écraser
         // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
         paymentFeePercent: feePercent,
@@ -196,6 +207,132 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  /// Ouvre la carte pour placer le restaurant, puis enregistre aussitôt la position.
+  Future<void> _pickPosition() async {
+    final loc = await Navigator.push<LocationData>(
+      context,
+      MaterialPageRoute(builder: (_) => GpsPickerScreen(initialLat: _lat, initialLng: _lng)),
+    );
+    if (loc == null || !mounted) return;
+    final base = _current;
+    if (base == null) return;
+
+    // Adresse texte encore vide ou générique : proposer celle trouvée sur la carte.
+    final found = loc.address?.trim() ?? '';
+    final currentAddress = _address.text.trim();
+    var replaceAddress = false;
+    if (found.isNotEmpty && found != currentAddress && (currentAddress.isEmpty || currentAddress == 'Lomé, Togo')) {
+      replaceAddress = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text("Mettre à jour l'adresse ?"),
+              content: Text("Remplacer l'adresse du restaurant par :\n« $found »"),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Garder')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remplacer')),
+              ],
+            ),
+          ) ??
+          false;
+      if (!mounted) return;
+    }
+
+    setState(() => _savingPosition = true);
+    try {
+      // Enregistre la position à partir des réglages chargés : les modifications du formulaire
+      // non encore enregistrées restent à l'écran et partent avec « Enregistrer ».
+      final saved = await Api.instance.saveSettings(AppSettings(
+        deliveryFee: base.deliveryFee,
+        minOrder: base.minOrder,
+        isOpen: base.isOpen,
+        restaurantPhone: base.restaurantPhone,
+        restaurantAddress: replaceAddress ? found : base.restaurantAddress,
+        restaurantLat: loc.lat,
+        restaurantLng: loc.lng,
+        paymentFeePercent: base.paymentFeePercent,
+        paymentFeePercentByOperator: base.paymentFeePercentByOperator,
+        paymentFeeSource: base.paymentFeeSource,
+        paymentFeePercentSettings: base.paymentFeePercentSettings,
+        paymentMode: base.paymentMode,
+        paymentProvider: base.paymentProvider,
+        maxQuantityPerItem: base.maxQuantityPerItem,
+        momoUnpaidCancelMinutes: base.momoUnpaidCancelMinutes,
+      ));
+      if (!mounted) return;
+      setState(() {
+        _current = saved;
+        _lat = saved.restaurantLat ?? loc.lat;
+        _lng = saved.restaurantLng ?? loc.lng;
+        _positionAddress = found.isEmpty ? null : found;
+        if (replaceAddress) _address.text = found;
+      });
+      showMessage(context, 'Position du restaurant enregistrée');
+    } catch (e) {
+      if (mounted) showMessage(context, e, error: true);
+    } finally {
+      if (mounted) setState(() => _savingPosition = false);
+    }
+  }
+
+  /// Ligne « Position du restaurant » : état actuel + bouton vers la carte.
+  Widget _positionTile() {
+    final scheme = Theme.of(context).colorScheme;
+    final lat = _lat;
+    final lng = _lng;
+    final defined = lat != null && lng != null;
+    final address = _positionAddress ?? '';
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: defined ? scheme.surfaceContainerHighest : AppColors.red.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: defined ? null : Border.all(color: AppColors.red.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(defined ? Icons.place : Icons.location_off_outlined,
+                  color: defined ? AppColors.green : AppColors.red),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Position du restaurant',
+                        style: TextStyle(fontWeight: FontWeight.w900, color: scheme.onSurface)),
+                    const SizedBox(height: 4),
+                    if (!defined)
+                      Text("Non définie — les itinéraires de livraison ne s'afficheront pas",
+                          style: TextStyle(color: scheme.onSurfaceVariant))
+                    else ...[
+                      if (address.isNotEmpty) Text(address, style: TextStyle(color: scheme.onSurface)),
+                      Text('${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+                          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: _savingPosition || _saving ? null : _pickPosition,
+              icon: _savingPosition
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.map_outlined),
+              label: const Text('Placer sur la carte'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   static double? _parsePercent(String? v) => double.tryParse((v ?? '').trim().replaceAll(',', '.'));
@@ -256,6 +393,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     maxLines: 2,
                     decoration: const InputDecoration(labelText: 'Adresse du restaurant'),
                   ),
+                  const SizedBox(height: 14),
+                  _positionTile(),
                   const SizedBox(height: 24),
                   const Text('Paiement mobile money', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
@@ -280,7 +419,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _MerchantCard(future: _merchant),
                   const SizedBox(height: 24),
                   FilledButton(
-                    onPressed: _saving ? null : _save,
+                    onPressed: _saving || _savingPosition ? null : _save,
                     child: _saving
                         ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
                         : const Text('Enregistrer'),
