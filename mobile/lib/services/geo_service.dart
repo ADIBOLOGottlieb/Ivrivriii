@@ -59,6 +59,13 @@ class GeoService {
 
   bool get usesGoogle => hasGoogleMapsKey;
 
+  /// Tuiles OpenStreetMap (fond par défaut sans clé Google).
+  static const osmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+  /// Identifiant envoyé dans le User-Agent des tuiles (exigé par OpenStreetMap) :
+  /// le vrai nom du paquet Android, pour ne pas être confondu avec une appli inconnue.
+  static const tileUserAgentPackage = androidPackageName;
+
   /// En-têtes communs aux appels Google (clé restreinte aux applications Android).
   static Map<String, String> get googleHeaders {
     final headers = <String, String>{'X-Android-Package': androidPackageName};
