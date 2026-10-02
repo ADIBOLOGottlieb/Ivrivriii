@@ -52,7 +52,7 @@ Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstrati
 | `PAYGATE_AUTH_TOKEN` | clé API PayGate Global (**secret**) |
 | `MERCHANT_FLOOZ_NUMBER`, `MERCHANT_MIXX_NUMBER` | numéros marchands du restaurant (affichés masqués dans l'admin) |
 | `MERCHANT_DISPLAY_NAME` | nom affiché au client, « Ivrivrii Chicken » par défaut |
-| `PROVIDER_FEE_PERCENT` | commission de l'agrégateur, pour calculer le net à recevoir |
+| `PROVIDER_FEE_PERCENT_FLOOZ`, `PROVIDER_FEE_PERCENT_MIXX` (ou `PROVIDER_FEE_PERCENT` pour les deux) | commission exacte de votre contrat avec l'agrégateur, en % : ce sont les frais payés par le client (voir « Frais de paiement ») |
 | `KADEV_PUBLIC_KEY`, `KADEV_SECRET_KEY`, `KADEV_WEBHOOK_SECRET` | uniquement si `PAYMENT_PROVIDER=kadev` |
 | `PAYMENT_EXPIRY_SECONDS` | durée d'une demande de paiement (120 par défaut) |
 
@@ -73,7 +73,19 @@ flutter run --dart-define=API_URL=http://192.168.1.20:4000
 
 APK : `flutter build apk --release --dart-define=API_URL=https://ivrivrii-api.onrender.com --dart-define=GOOGLE_MAPS_API_KEY=VOTRE_CLE`
 
-La CI GitHub (`.github/workflows/build-apk.yml`) analyse le code, lance les tests et produit l'APK à chaque push sur `main` qui touche `mobile/` (onglet **Actions** → *Build APK* → *Artifacts*).
+La CI GitHub (`.github/workflows/build-apk.yml`) analyse le code, lance les tests et produit l'APK à chaque push sur `main` qui touche `mobile/` (onglet **Actions** → *Build APK* → *Artifacts*). Les tests du backend (`npm test`) tournent à chaque push qui touche `backend/`.
+
+### Signature de l'APK (clé fixe)
+L'APK doit toujours être signé avec **la même clé** : sinon Android refuse d'installer une mise à jour par-dessus l'ancienne version, et la clé Google Maps ne peut pas être restreinte à l'app (l'empreinte SHA-1 changerait à chaque build).
+
+1. La clé est un fichier `.jks`, conservé **hors du dépôt** (jamais sur GitHub). Pour en créer une :
+   `keytool -genkeypair -keystore ivrivrii-release.jks -storetype PKCS12 -alias ivrivrii -keyalg RSA -keysize 2048 -validity 10000`
+2. Sur GitHub (*Settings* → *Secrets and variables* → *Actions*), ajoutez :
+   - `ANDROID_KEYSTORE_BASE64` : le fichier `.jks` encodé en base64 (`base64 -w0 ivrivrii-release.jks`) ;
+   - `ANDROID_KEYSTORE_PASSWORD` : son mot de passe (alias `ivrivrii`, même mot de passe pour la clé).
+3. La CI écrit `android/key.properties` (ignoré par git), signe l'APK et calcule elle-même l'empreinte SHA-1 envoyée par l'app à Google. Sans ces secrets, l'APK est signé avec une clé de débogage.
+
+⚠️ **Sauvegardez le fichier `.jks` et son mot de passe** (clé USB, coffre-fort de mots de passe) : s'ils sont perdus, les téléphones devront désinstaller l'app pour installer une nouvelle version. Au premier passage à la clé fixe, l'ancienne version (signée en débogage) doit être désinstallée une fois.
 
 ## 3. Carte Google (facultatif)
 
@@ -83,14 +95,14 @@ Sans clé, l'app utilise automatiquement **OpenStreetMap**. Avec une clé, elle 
 2. **Restreignez la clé** (*Identifiants* → la clé) :
    - *Restrictions d'application* → **Applications Android** : nom du package `com.ivrivrii.ivrivrii_chicken` + empreinte **SHA-1** du certificat qui signe l'APK (`keytool -list -v -keystore <votre.jks>`).
    - *Restrictions d'API* : uniquement les trois API ci-dessus.
-3. Sur GitHub (*Settings* → *Secrets and variables* → *Actions*), ajoutez les secrets `GOOGLE_MAPS_API_KEY` et `GOOGLE_ANDROID_CERT_SHA1` (l'empreinte, envoyée par l'app avec ses requêtes Google).
+3. Sur GitHub (*Settings* → *Secrets and variables* → *Actions*), ajoutez le secret `GOOGLE_MAPS_API_KEY`. L'empreinte SHA-1 est calculée par la CI à partir de la clé de signature (voir « Signature de l'APK ») : elle doit être en place **avant** de restreindre la clé Google.
 
-⚠️ Pour que la restriction Android fonctionne, l'APK doit toujours être signé **avec la même clé**. Aujourd'hui la CI signe avec une clé de débogage temporaire, différente à chaque build : créez une clé de signature (`keytool -genkey ...`), stockez-la en secret GitHub et configurez `android/key.properties` dans la CI avant de restreindre la clé Google. La clé Google Maps est la seule clé présente dans l'APK : c'est pour cela qu'elle doit être restreinte.
+La clé Google Maps est la seule clé présente dans l'APK : c'est pour cela qu'elle doit être restreinte.
 
 ## 4. Paiements Flooz / Mixx by Yas
 
 ### Parcours
-1. Le client commande : le **serveur** calcule le total (sous-total + livraison + frais mobile money, 2 % par défaut). Le montant envoyé par l'app n'est jamais pris en compte.
+1. Le client commande : le **serveur** calcule le total (sous-total + livraison + frais mobile money, voir « Frais de paiement »). Le montant envoyé par l'app n'est jamais pris en compte.
 2. Écran « Payer {total} FCFA » : numéro pré-rempli et modifiable → « Envoyer la demande ».
 3. L'opérateur envoie une demande de confirmation (push USSD) sur le téléphone : le client tape son **code PIN** dans la fenêtre de l'opérateur.
 4. L'app vérifie le statut toutes les 3 s pendant environ 2 min → « Paiement reçu ✅ », ou « Expiré / Refusé » avec « Réessayer ».
@@ -104,9 +116,19 @@ Sans prestataire configuré (`PAYMENT_PROVIDER=simulation`, valeur actuelle sur 
 1. Créez le compte marchand sur paygateglobal.com et fournissez les pièces de l'entreprise.
 2. Récupérez la clé API (`auth_token`) dans le tableau de bord, puis sur Render : `PAYMENT_PROVIDER=paygate` et `PAYGATE_AUTH_TOKEN=…`.
 3. Déclarez l'URL de retour (callback) : `https://ivrivrii-api.onrender.com/api/payments/paygate/webhook`. Elle n'est pas signée : le serveur revérifie systématiquement chaque paiement via `/api/v2/status`.
-4. Indiquez la commission de PayGate dans `PROVIDER_FEE_PERCENT`.
+4. Indiquez la commission de votre contrat PayGate dans `PROVIDER_FEE_PERCENT_FLOOZ` / `PROVIDER_FEE_PERCENT_MIXX` (voir ci-dessous).
 
 Flooz utilise le réseau `FLOOZ`, Mixx by Yas (ex-T-Money) le réseau `TMONEY`.
+
+### Frais de paiement
+Les frais payés par le client sont **exactement la commission de l'agrégateur**, opérateur par opérateur, et le restaurant reçoit exactement commande + livraison. L'agrégateur prélève p % du montant payé : le serveur demande donc au client total = ⌈(commande + livraison) / (1 − p/100)⌉.
+
+Exemple : 20 000 F + 1 000 F de livraison avec une commission de 3,5 % → total 21 762 F, commission 762 F, net pour le restaurant 21 000 F.
+
+- Le taux vient de `PROVIDER_FEE_PERCENT_FLOOZ` / `PROVIDER_FEE_PERCENT_MIXX` (repli : `PROVIDER_FEE_PERCENT`). Dans l'admin, le champ « frais de paiement » devient alors informatif (« fixés par l'agrégateur »).
+- Sans ces variables, ou en mode simulation, c'est le réglage « frais de paiement » de l'admin qui s'applique (2 % par défaut).
+- Le taux est enregistré sur chaque commande : un changement ne modifie pas les commandes déjà passées.
+- ⚠️ Mettez la commission **exacte** de votre contrat. Une valeur `0` voudrait dire 0 % de frais pour le client, et le restaurant paierait la commission.
 
 ## 5. Argent vers les comptes marchands du restaurant
 
