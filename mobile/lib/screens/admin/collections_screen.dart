@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:share_plus/share_plus.dart';
 
 import '../../models_admin.dart';
 import '../../services/admin_api.dart';
@@ -34,6 +35,7 @@ class _CollectionsScreenState extends State<CollectionsScreen> {
   Object? _error;
   bool _loading = true;
   bool _exporting = false;
+  final _exportKey = GlobalKey();
   bool _settling = false;
   int _requestId = 0;
   final Set<int> _selected = {};
@@ -116,33 +118,81 @@ class _CollectionsScreenState extends State<CollectionsScreen> {
     });
   }
 
-  Future<void> _export() async {
+  /// Zone du bouton d'export (requise par la feuille de partage sur iPad).
+  Rect? _exportOrigin() {
+    final box = _exportKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  /// Exporte le CSV : [share] = fichier via la feuille de partage, sinon copie dans le presse-papiers.
+  Future<void> _export({required bool share}) async {
+    if (_exporting) return;
     setState(() => _exporting = true);
+    final period = _rangeLabel();
+    CollectionsCsv? csv;
     try {
-      final csv = await downloadCollectionsCsv(_query);
-      await Clipboard.setData(ClipboardData(text: csv));
+      csv = await downloadCollectionsCsv(_query);
       if (!mounted) return;
-      final lines = csv.split('\n').where((l) => l.trim().isNotEmpty).length;
-      final rows = lines > 0 ? lines - 1 : 0; // sans la ligne d'en-tête
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          icon: const Icon(Icons.content_paste_rounded, color: AppColors.green, size: 36),
-          title: const Text('Export CSV copié'),
-          content: Text(
-            'Le fichier CSV ($rows paiement${rows > 1 ? 's' : ''}, période ${_rangeLabel()}) '
-            'a été copié dans le presse-papiers.\n\n'
-            'Collez-le dans un e-mail, une note, WhatsApp ou un tableur '
-            '(séparateur « ; »), puis enregistrez-le en .csv si besoin.',
-          ),
-          actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-        ),
-      );
+      if (!share) {
+        await _copy(csv, period);
+        return;
+      }
+      final file = await writeCollectionsCsvFile(csv);
+      final label = 'Encaissements Ivrivrii Chicken $period';
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(file.path, mimeType: 'text/csv', name: csv.fileName)],
+        fileNameOverrides: [csv.fileName],
+        subject: label,
+        title: label,
+        text: label,
+        sharePositionOrigin: _exportOrigin(),
+      ));
     } catch (e) {
-      if (mounted) showMessage(context, e, error: true);
+      if (!mounted) return;
+      if (csv == null) {
+        // Échec du téléchargement : message du serveur.
+        showMessage(context, e, error: true);
+      } else {
+        // Partage impossible : repli sur le presse-papiers.
+        await _copy(csv, period, shareFailed: true);
+      }
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
+  }
+
+  Future<void> _copy(CollectionsCsv csv, String period, {bool shareFailed = false}) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: csv.text));
+    } catch (e) {
+      if (mounted) {
+        showMessage(context, shareFailed ? 'Partage et copie impossibles. Réessayez.' : 'Copie impossible. Réessayez.',
+            error: true);
+      }
+      return;
+    }
+    if (!mounted) return;
+    final rows = csv.rows;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(
+          shareFailed ? Icons.warning_amber_rounded : Icons.content_paste_rounded,
+          color: shareFailed ? Colors.orange.shade700 : AppColors.green,
+          size: 36,
+        ),
+        title: Text(shareFailed ? 'Partage impossible' : 'Export CSV copié'),
+        content: Text(
+          '${shareFailed ? "Le fichier n'a pas pu être partagé depuis ce téléphone. " : ''}'
+          'Le CSV ($rows paiement${rows > 1 ? 's' : ''}, période $period) '
+          'a été copié dans le presse-papiers.\n\n'
+          'Collez-le dans un e-mail, une note, WhatsApp ou un tableur '
+          '(séparateur « ; »), puis enregistrez-le en .csv si besoin.',
+        ),
+        actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
   }
 
   Future<void> _settle() async {
@@ -363,12 +413,34 @@ class _CollectionsScreenState extends State<CollectionsScreen> {
       appBar: AppBar(
         title: const Text('Encaissements'),
         actions: [
-          IconButton(
+          PopupMenuButton<bool>(
+            key: _exportKey,
             tooltip: 'Exporter en CSV',
-            onPressed: _exporting ? null : _export,
+            enabled: !_exporting,
+            onSelected: (share) => _export(share: share),
             icon: _exporting
                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5))
-                : const Icon(Icons.file_download_outlined),
+                : const Icon(Icons.ios_share_rounded),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: true,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.share_rounded),
+                  title: Text('Partager le fichier CSV'),
+                  subtitle: Text('WhatsApp, e-mail, Drive, Excel…'),
+                ),
+              ),
+              PopupMenuItem(
+                value: false,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.content_copy_rounded),
+                  title: Text('Copier'),
+                  subtitle: Text('Dans le presse-papiers'),
+                ),
+              ),
+            ],
           ),
           IconButton(
             tooltip: 'Actualiser',

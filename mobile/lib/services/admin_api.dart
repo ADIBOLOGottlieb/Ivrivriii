@@ -1,9 +1,12 @@
 // Appels API de l'espace administrateur : paiements, encaissements, reversements.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import '../config.dart';
 import '../models.dart';
@@ -80,21 +83,55 @@ Future<int> createSettlement(List<int> paymentIds, String reference) async {
   return n is num ? n.toInt() : paymentIds.length;
 }
 
-/// Télécharge l'export CSV (séparateur `;`). Le BOM UTF-8 éventuel est retiré.
+const _utf8Bom = [0xEF, 0xBB, 0xBF];
+
+bool _hasBom(List<int> b) => b.length >= 3 && b[0] == _utf8Bom[0] && b[1] == _utf8Bom[1] && b[2] == _utf8Bom[2];
+
+/// Export CSV téléchargé (séparateur `;`). Le BOM UTF-8 est conservé dans le fichier
+/// pour qu'Excel affiche correctement les accents.
+class CollectionsCsv {
+  final Uint8List bytes;
+  final String fileName; // encaissements_<du>_<au>.csv
+  const CollectionsCsv(this.bytes, this.fileName);
+
+  /// Texte sans BOM (pour le presse-papiers).
+  String get text => utf8.decode(_hasBom(bytes) ? bytes.sublist(3) : bytes, allowMalformed: true);
+
+  /// Nombre de paiements (lignes non vides, sans l'en-tête).
+  int get rows {
+    final lines = text.split('\n').where((l) => l.trim().isNotEmpty).length;
+    return lines > 0 ? lines - 1 : 0;
+  }
+}
+
+/// Télécharge l'export CSV des encaissements.
 /// Api.instance.get décode du JSON : on passe donc directement par http avec le jeton.
-Future<String> downloadCollectionsCsv(Map<String, String> query) async {
+Future<CollectionsCsv> downloadCollectionsCsv(Map<String, String> query) async {
   final uri = Uri.parse('$apiBaseUrl/api/admin/collections/export.csv').replace(queryParameters: query);
   final res = await _getRaw(uri);
-  final text = utf8.decode(res.bodyBytes, allowMalformed: true);
   if (res.statusCode < 200 || res.statusCode >= 300) {
     var msg = 'Export impossible (${res.statusCode})';
-    final body = _tryJson(text);
+    final body = _tryJson(utf8.decode(res.bodyBytes, allowMalformed: true));
     if (body is Map && body['error'] is String) msg = body['error'] as String;
     if (res.statusCode == 401) Api.instance.onUnauthorized?.call();
     throw ApiException(msg, res.statusCode);
   }
-  final bom = String.fromCharCode(0xFEFF);
-  return text.startsWith(bom) ? text.substring(1) : text;
+  final raw = res.bodyBytes;
+  final bytes = _hasBom(raw) ? raw : Uint8List.fromList([..._utf8Bom, ...raw]);
+  return CollectionsCsv(bytes, 'encaissements_${query['from'] ?? ''}_${query['to'] ?? ''}.csv');
+}
+
+/// Écrit le CSV dans le dossier temporaire de l'application (sous-dossier « exports »).
+Future<File> writeCollectionsCsvFile(CollectionsCsv csv) async {
+  try {
+    final tmp = await getTemporaryDirectory();
+    final dir = Directory('${tmp.path}${Platform.pathSeparator}exports');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}${Platform.pathSeparator}${csv.fileName}');
+    return await file.writeAsBytes(csv.bytes, flush: true);
+  } catch (_) {
+    throw ApiException("Impossible d'enregistrer le fichier CSV sur le téléphone.");
+  }
 }
 
 Future<http.Response> _getRaw(Uri uri) async {
