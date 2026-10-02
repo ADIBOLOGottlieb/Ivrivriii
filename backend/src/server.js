@@ -7,11 +7,12 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const { db, transaction, getSettings } = require('./db');
-const { signToken, requireAuth, requireAdmin } = require('./auth');
+const { signToken, requireAuth, requireAdmin, isInactive, INACTIVE_MESSAGE } = require('./auth');
 const { seedIfEmpty } = require('./seed');
 const { log, requestLogger, lastHourMetrics } = require('./logger');
 const { audit, raiseAlert, checkOrder, startMonitoring, orderRate } = require('./monitor');
 const payments = require('./payments');
+const delivery = require('./delivery');
 
 seedIfEmpty();
 
@@ -120,7 +121,9 @@ const orderLimiter = rateLimit({
 function basicPublicUser(u) {
   return { id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, address: u.address, created_at: u.created_at };
 }
-const publicUser = account?.publicUser ?? basicPublicUser;
+const basePublicUser = account?.publicUser ?? basicPublicUser;
+// active : false pour un livreur désactivé (colonne absente d'une très vieille base = actif).
+const publicUser = (u) => ({ ...basePublicUser(u), active: !isInactive(u) });
 
 function mapProduct(p) {
   return { ...p, available: !!p.available, popular: !!p.popular };
@@ -137,21 +140,20 @@ function presentOrder(o, viewer) {
   return { ...rest, pay_url: canPay ? `/pay/${o.id}?t=${payment_token}` : null };
 }
 
+// Commande + nom du client + livreur (driver_name, driver_phone : null sans livreur).
+const ORDER_SELECT = `SELECT o.*, u.name AS customer_name, d.name AS driver_name, d.phone AS driver_phone
+  FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN users d ON d.id = o.driver_id`;
+
 function loadOrder(id) {
-  const order = db
-    .prepare(`SELECT o.*, u.name AS customer_name FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?`)
-    .get(id);
+  const order = db.prepare(`${ORDER_SELECT} WHERE o.id = ?`).get(id);
   if (!order) return null;
   order.items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
   return order;
 }
 
-function loadOrders(where, params) {
+function loadOrders(where, params, { orderBy = 'o.created_at DESC, o.id DESC', limit = 200 } = {}) {
   const orders = db
-    .prepare(
-      `SELECT o.*, u.name AS customer_name FROM orders o JOIN users u ON u.id = o.user_id
-       ${where} ORDER BY o.created_at DESC, o.id DESC LIMIT 200`,
-    )
+    .prepare(`${ORDER_SELECT} ${where} ORDER BY ${orderBy} LIMIT ${Number(limit) || 200}`)
     .all(...params);
   if (orders.length === 0) return orders;
   const ids = orders.map((o) => o.id);
@@ -191,7 +193,12 @@ app.post('/api/auth/login', loginLimiter, h((req, res) => {
     audit('login_failed', { userId: user?.id ?? null, details: { phone: String(phone || '').slice(0, 20) }, ip: req.ip });
     throw httpError(401, 'Téléphone ou mot de passe incorrect');
   }
-  audit(user.role === 'admin' ? 'admin_login' : 'login', { userId: user.id, ip: req.ip });
+  // Compte désactivé (livreur) : mot de passe correct mais connexion refusée, avec un message clair.
+  if (isInactive(user)) {
+    audit('login_refused_inactive', { userId: user.id, ip: req.ip });
+    throw httpError(403, INACTIVE_MESSAGE);
+  }
+  audit(user.role === 'admin' ? 'admin_login' : user.role === 'driver' ? 'driver_login' : 'login', { userId: user.id, ip: req.ip });
   res.json({ token: signToken(user), user: publicUser(user) });
 }));
 
@@ -227,6 +234,7 @@ app.get('/api/settings', h((_req, res) => {
     momo_unpaid_cancel_minutes: s.momo_unpaid_cancel_minutes,
     restaurant_lat: s.restaurant_lat,
     restaurant_lng: s.restaurant_lng,
+    delivery_auto_confirm_hours: s.delivery_auto_confirm_hours,
   });
 }));
 
@@ -323,7 +331,9 @@ app.get('/api/orders', requireAuth, h((req, res) => {
 
 app.get('/api/orders/:id', requireAuth, h((req, res) => {
   const order = loadOrder(Number(req.params.id));
-  if (!order || (order.user_id !== req.user.id && req.user.role !== 'admin')) throw httpError(404, 'Commande introuvable');
+  // Le livreur attribué peut aussi relire la commande.
+  const allowed = order && (order.user_id === req.user.id || req.user.role === 'admin' || (order.driver_id && order.driver_id === req.user.id));
+  if (!allowed) throw httpError(404, 'Commande introuvable');
   res.json(presentOrder(order, req.user));
 }));
 
@@ -406,9 +416,16 @@ app.patch('/api/admin/orders/:id/status', requireAdmin, h((req, res) => {
   if (status !== 'cancelled' && payments.isMobileMoney(order.payment_method) && order.payment_status !== 'paid') {
     throw httpError(400, 'Paiement pas encore reçu : impossible de lancer la commande');
   }
-  db.prepare(`UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
+  // Retour à une étape avant la livraison : le livreur est retiré (la commande repart dans « À livrer »).
+  const backBeforeDelivery = ['pending', 'confirmed', 'preparing', 'ready'].includes(status) && order.driver_id;
+  if (backBeforeDelivery) {
+    db.prepare(`UPDATE orders SET status = ?, driver_id = NULL, picked_up_at = NULL, driver_delivered_at = NULL,
+                  updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
+  } else {
+    db.prepare(`UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
+  }
   if (status === 'cancelled') payments.cancelPendingAttempts(order.id, 'Commande annulée par le restaurant');
-  audit('order_status', { userId: req.user.id, details: { orderId: order.id, from: order.status, to: status }, ip: req.ip });
+  audit('order_status', { userId: req.user.id, details: { orderId: order.id, from: order.status, to: status, driverId: order.driver_id ?? null, ...(backBeforeDelivery ? { driver_removed: true } : {}) }, ip: req.ip });
   if (status === 'cancelled' && order.payment_status === 'paid') {
     raiseAlert('refund_needed', 'warning', `Commande n°${order.id} annulée alors qu'elle est payée (${order.total} FCFA) : remboursement à prévoir`,
       { key: `order-${order.id}`, orderId: order.id }, 0);
@@ -505,7 +522,7 @@ app.get('/api/admin/users', requireAdmin, h((_req, res) => {
   res.json(
     db
       .prepare(
-        `SELECT u.id, u.name, u.phone, u.email, u.role, u.address, u.created_at,
+        `SELECT u.id, u.name, u.phone, u.email, u.role, u.address, u.created_at, u.active,
                 COUNT(o.id) AS orders_count, COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN o.total END), 0) AS total_spent
          FROM users u LEFT JOIN orders o ON o.user_id = u.id
          GROUP BY u.id ORDER BY u.created_at DESC`,
@@ -523,6 +540,7 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     spike_factor: [1, 50],
     high_amount_alert: [1000, 100000000],
     momo_unpaid_cancel_minutes: [5, 1440],
+    delivery_auto_confirm_hours: [1, 72],
   };
   const text = ['restaurant_phone', 'restaurant_address'];
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
@@ -562,6 +580,7 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
       const v = Number(req.body[key]);
       if (!Number.isFinite(v) || v < min || v > max) throw httpError(400, `Valeur invalide pour ${key} (entre ${min} et ${max})`);
       if (key === 'momo_unpaid_cancel_minutes' && !Number.isInteger(v)) throw httpError(400, 'Délai en minutes entières');
+      if (key === 'delivery_auto_confirm_hours' && !Number.isInteger(v)) throw httpError(400, 'Délai en heures entières');
       upsert.run(key, String(v));
       changed[key] = v;
     }
@@ -633,6 +652,9 @@ app.get('/api/admin/audit', requireAdmin, h((req, res) => {
   );
 }));
 
+// Livraison : espace livreur, « Reçu » du client, livreurs et attribution (admin).
+app.use(delivery.createDeliveryRouter({ loadOrder, loadOrders, presentOrder }));
+
 // Paiements mobile money : push USSD, file à vérifier, encaissements, reversements, remboursements.
 app.use(payments.createApiRouter({ presentOrder, loadOrder }));
 
@@ -647,6 +669,7 @@ app.use((err, req, res, _next) => {
 
 startMonitoring();
 payments.startPaymentTasks();
+delivery.startDeliveryTasks();
 
 const PORT = Number(process.env.PORT) || 4000;
 app.listen(PORT, '0.0.0.0', () => {

@@ -11,9 +11,14 @@ if (JWT_SECRET === DEFAULT_SECRET) {
   console.warn('⚠️  JWT_SECRET non défini : clé de développement utilisée (ne pas utiliser en production).');
 }
 
+const INACTIVE_MESSAGE = 'Compte désactivé : contactez le restaurant';
+
 function signToken(user) {
   return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
 }
+
+/** Vrai si le compte est désactivé (colonne active = 0 ; absente sur une très vieille base = actif). */
+const isInactive = (user) => user.active !== undefined && user.active !== null && Number(user.active) === 0;
 
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -29,8 +34,10 @@ function requireAuth(req, res, next) {
   // (SELECT * : la colonne deleted_at n'existe que si account.js a fait sa migration.)
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(payload.id);
   if (!user || user.deleted_at) return res.status(401).json({ error: 'Session expirée, reconnectez-vous' });
+  // Compte désactivé (livreur) : la session est refusée immédiatement, sans attendre l'expiration.
+  if (isInactive(user)) return res.status(401).json({ error: INACTIVE_MESSAGE, code: 'account_disabled' });
   // Le rôle vient de la base : un admin rétrogradé perd l'accès sans attendre l'expiration du jeton.
-  req.user = { ...payload, role: user.role };
+  req.user = { ...payload, role: user.role, name: user.name };
   next();
 }
 
@@ -41,4 +48,14 @@ function requireAdmin(req, res, next) {
   });
 }
 
-module.exports = { signToken, requireAuth, requireAdmin };
+/** Espace livreur : rôle 'driver' actif (vérifié par requireAuth) ; l'administrateur y a aussi accès. */
+function requireDriver(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.user.role !== 'driver' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Accès réservé aux livreurs' });
+    }
+    next();
+  });
+}
+
+module.exports = { signToken, requireAuth, requireAdmin, requireDriver, isInactive, INACTIVE_MESSAGE };

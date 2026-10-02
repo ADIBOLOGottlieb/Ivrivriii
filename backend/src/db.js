@@ -14,7 +14,7 @@ db.exec(`
     phone TEXT NOT NULL UNIQUE,
     email TEXT,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'customer' CHECK (role IN ('customer', 'admin')),
+    role TEXT NOT NULL DEFAULT 'customer' CHECK (role IN ('customer', 'admin', 'driver')),
     address TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -106,11 +106,78 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
 `);
 
+/**
+ * Ajoute le rôle 'driver' au CHECK de users.role sur une base existante.
+ * SQLite ne sait pas modifier un CHECK : reconstruction de la table (procédure officielle) en
+ * reprenant le schéma ACTUEL (toutes les colonnes, y compris celles ajoutées par account.js :
+ * avatar_url, momo_phone, deleted_at...). Idempotente : ne fait rien si 'driver' est déjà accepté.
+ * @returns true si la table a été reconstruite.
+ */
+function migrateUsersRole(database) {
+  const row = database.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).get();
+  if (!row) return false;
+  const checkRe = /CHECK\s*\(\s*role\s+IN\s*\(([^)]*)\)\s*\)/i;
+  const m = row.sql.match(checkRe);
+  if (!m || /'driver'/.test(m[1])) return false;
+  const newSql = row.sql
+    .replace(checkRe, "CHECK (role IN ('customer', 'admin', 'driver'))")
+    .replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`[]?users["`\]]?/i, 'CREATE TABLE users_new');
+  const cols = database.prepare('PRAGMA table_info(users)').all().map((c) => `"${c.name}"`).join(', ');
+  // Index et déclencheurs de users (hors index automatiques) à recréer après le renommage.
+  const extras = database
+    .prepare(`SELECT sql FROM sqlite_master WHERE tbl_name = 'users' AND type IN ('index', 'trigger') AND sql IS NOT NULL`)
+    .all()
+    .map((r) => r.sql);
+  const seq = database.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'users'`).get()?.seq ?? 0;
+  const count = database.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+  const brokenBefore = new Set(database.prepare('PRAGMA foreign_key_check').all().map((r) => `${r.table}:${r.rowid}:${r.fkid}`));
+
+  // PRAGMA foreign_keys est sans effet dans une transaction : on le coupe avant.
+  database.exec('PRAGMA foreign_keys = OFF');
+  try {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database.exec(newSql);
+      database.exec(`INSERT INTO users_new (${cols}) SELECT ${cols} FROM users`);
+      database.exec('DROP TABLE users');
+      database.exec('ALTER TABLE users_new RENAME TO users');
+      for (const sql of extras) database.exec(sql);
+      database.prepare(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'users'`).run(seq);
+      const copied = database.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+      if (copied !== count) throw new Error(`migration users : ${copied} lignes copiées sur ${count}`);
+      // Seules les violations apparues avec la migration la bloquent (pas d'éventuelles anciennes).
+      const broken = database.prepare('PRAGMA foreign_key_check').all()
+        .filter((r) => !brokenBefore.has(`${r.table}:${r.rowid}:${r.fkid}`));
+      if (broken.length) throw new Error(`migration users : clés étrangères invalides ${JSON.stringify(broken.slice(0, 5))}`);
+      database.exec('COMMIT');
+    } catch (err) {
+      database.exec('ROLLBACK');
+      throw err;
+    }
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON');
+  }
+  console.log(`🛵 Migration : rôle livreur ajouté à la table users (${count} comptes conservés)`);
+  return true;
+}
+
 // Migrations : ajoute les colonnes manquantes sur une base existante.
 function addColumn(table, column, definition) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
   if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+migrateUsersRole(db);
+// Un compte désactivé (livreur) ne peut plus se connecter ni prendre de livraison.
+addColumn('users', 'active', 'INTEGER NOT NULL DEFAULT 1');
+// Livraison : livreur attribué, prise en charge, « Livraison faite » (livreur), « Reçu » (client).
+addColumn('orders', 'driver_id', 'INTEGER REFERENCES users(id)');
+addColumn('orders', 'picked_up_at', 'TEXT');
+addColumn('orders', 'driver_delivered_at', 'TEXT');
+addColumn('orders', 'received_at', 'TEXT');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_orders_driver ON orders(driver_id, status);
+  CREATE INDEX IF NOT EXISTS idx_orders_status_mode ON orders(status, mode);
+`);
 addColumn('orders', 'delivery_lat', 'REAL');
 addColumn('orders', 'delivery_lng', 'REAL');
 addColumn('orders', 'delivery_accuracy', 'REAL');
@@ -202,7 +269,9 @@ function getSettings() {
     // Position du restaurant (départ des itinéraires de livraison) : null tant que non définie.
     restaurant_lat: optionalNumber(s.restaurant_lat),
     restaurant_lng: optionalNumber(s.restaurant_lng),
+    // Passage automatique à « livrée » sans « Reçu » du client (heures après « Livraison faite »).
+    delivery_auto_confirm_hours: Number(s.delivery_auto_confirm_hours ?? 12),
   };
 }
 
-module.exports = { db, transaction, getSettings };
+module.exports = { db, transaction, getSettings, migrateUsersRole };
