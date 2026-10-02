@@ -44,13 +44,37 @@ jobs:
           done
           exit $code
       - run: flutter test
+      # Signature fixe : secrets ANDROID_KEYSTORE_BASE64 (fichier .jks encodé en base64) et
+      # ANDROID_KEYSTORE_PASSWORD. Même empreinte SHA-1 à chaque build, donc la clé Google Maps
+      # peut être restreinte à l'app et les mises à jour s'installent par-dessus. Sans secrets :
+      # signature de débogage (empreinte différente à chaque build).
+      - name: Clé de signature
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::warning::Secrets de signature absents : APK signé avec une clé de débogage."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload.jks
+          {
+            echo "storeFile=upload.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=ivrivrii"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > android/key.properties
+          # Empreinte SHA-1 envoyée par l'app avec ses requêtes Google (clé restreinte Android).
+          sha1=$(keytool -list -v -keystore android/app/upload.jks -storepass "$KEYSTORE_PASSWORD" -alias ivrivrii | awk '/SHA1:/ {print $2}')
+          echo "Empreinte SHA-1 : $sha1"
+          echo "CERT_SHA1=$sha1" >> "$GITHUB_ENV"
       # Clé Google Maps (restreinte au package Android + SHA-1) : secret GitHub GOOGLE_MAPS_API_KEY.
       # Sans secret, la valeur est vide et l'app utilise automatiquement OpenStreetMap.
       - run: >-
           flutter build apk --release
           --dart-define=API_URL=${{ github.event.inputs.api_url || 'https://ivrivrii-api.onrender.com' }}
           --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
-          --dart-define=GOOGLE_ANDROID_CERT_SHA1=${{ secrets.GOOGLE_ANDROID_CERT_SHA1 }}
+          --dart-define=GOOGLE_ANDROID_CERT_SHA1=${{ env.CERT_SHA1 || secrets.GOOGLE_ANDROID_CERT_SHA1 }}
       - uses: actions/upload-artifact@v4
         with:
           name: ivrivrii-chicken-apk
