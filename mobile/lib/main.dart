@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
@@ -12,11 +14,21 @@ import 'screens/client/client_shell.dart';
 import 'screens/driver/driver_shell.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/splash_screen.dart';
+import 'services/maps_link.dart';
+import 'services/shared_location.dart';
 import 'theme.dart';
 import 'utils/cache_manager.dart';
 
+/// Messager global : messages affichés hors de tout écran précis (ex. position partagée depuis Google Maps).
+final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Réception des positions partagées depuis l'app Google Maps (sans bloquer le démarrage).
+  unawaited(SharedLocationService.instance.init().catchError((Object e) {
+    debugPrint('Partage Google Maps indisponible : $e');
+  }));
 
   // Initialize cache manager for image and data caching
   try {
@@ -49,6 +61,7 @@ class IvrivriiApp extends StatelessWidget {
         return MaterialApp(
           title: 'Ivrivrii Chicken',
           debugShowCheckedModeBanner: false,
+          scaffoldMessengerKey: scaffoldMessengerKey,
           theme: buildLightTheme(),
           darkTheme: buildDarkTheme(),
           themeMode: themeProvider.themeMode,
@@ -74,10 +87,57 @@ class _Root extends StatefulWidget {
 class _RootState extends State<_Root> {
   bool? _onboardingCompleted;
 
+  final _shared = SharedLocationService.instance;
+
   @override
   void initState() {
     super.initState();
     _checkOnboarding();
+    _shared.pending.addListener(_onSharedLocation);
+    _shared.failure.addListener(_onSharedFailure);
+    if (_shared.pending.value != null) _onSharedLocation();
+    if (_shared.failure.value != null) _onSharedFailure();
+  }
+
+  @override
+  void dispose() {
+    _shared.pending.removeListener(_onSharedLocation);
+    _shared.failure.removeListener(_onSharedFailure);
+    super.dispose();
+  }
+
+  /// Position reçue de Google Maps : si aucun écran (commande) ne l'a utilisée dans la seconde,
+  /// on prévient le client qu'elle servira pour sa prochaine commande.
+  void _onSharedLocation() {
+    final ImportedLocation? received = _shared.pending.value;
+    if (received == null) return;
+    Future.delayed(const Duration(seconds: 1), () {
+      if (!mounted || !identical(_shared.pending.value, received)) return;
+      final user = context.read<AuthProvider>().user;
+      final String message;
+      if (user != null && (user.isAdmin || user.isDriver)) {
+        // Livreur / admin : message neutre, la position n'est pas gardée.
+        _shared.consume();
+        message = 'Position Google Maps reçue : elle ne sert que pour les commandes clients.';
+      } else {
+        message = '📍 Position reçue de Google Maps : elle sera utilisée pour votre prochaine commande';
+      }
+      _showMessage(message);
+    });
+  }
+
+  void _onSharedFailure() {
+    final message = _shared.failure.value;
+    if (message == null) return;
+    _showMessage(message);
+  }
+
+  void _showMessage(String message) {
+    final messenger = scaffoldMessengerKey.currentState;
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message), duration: const Duration(seconds: 5)));
   }
 
   Future<void> _checkOnboarding() async {
