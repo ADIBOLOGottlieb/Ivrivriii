@@ -9,6 +9,7 @@ import 'providers/theme_provider.dart';
 import 'screens/admin/admin_shell.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/client/client_shell.dart';
+import 'screens/driver/driver_shell.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/splash_screen.dart';
 import 'theme.dart';
@@ -62,7 +63,7 @@ class IvrivriiApp extends StatelessWidget {
   }
 }
 
-/// Aiguille vers l'onboarding, l'espace client ou admin selon le compte connecté.
+/// Aiguille vers l'onboarding, l'espace client, livreur ou admin selon le compte connecté.
 class _Root extends StatefulWidget {
   const _Root();
 
@@ -92,7 +93,8 @@ class _RootState extends State<_Root> {
       return const SplashScreen();
     }
 
-    if (_onboardingCompleted == false && auth.user != null && !auth.user!.isAdmin) {
+    // Onboarding réservé aux clients (ni admin ni livreur).
+    if (_onboardingCompleted == false && auth.user != null && !auth.user!.isAdmin && !auth.user!.isDriver) {
       return OnboardingScreen(
         onComplete: () {
           if (mounted) setState(() => _onboardingCompleted = true);
@@ -105,6 +107,8 @@ class _RootState extends State<_Root> {
       child = const LoginScreen();
     } else if (auth.user!.isAdmin) {
       child = const AdminShell();
+    } else if (auth.user!.isDriver) {
+      child = const DriverShell();
     } else {
       child = const ClientShell();
     }

@@ -28,6 +28,7 @@ class AppUser {
   });
 
   bool get isAdmin => role == 'admin';
+  bool get isDriver => role == 'driver';
 
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
         id: _int(j['id']),
@@ -202,6 +203,13 @@ class Order {
   final String customerName;
   final List<OrderItem> items;
   final String? payUrl;
+  // Livraison : livreur attribué, prise en charge, « Livraison faite » (livreur), « Reçu » (client).
+  final int? driverId;
+  final String? driverName;
+  final String? driverPhone;
+  final DateTime? pickedUpAt;
+  final DateTime? driverDeliveredAt;
+  final DateTime? receivedAt;
 
   Order({
     required this.id,
@@ -226,6 +234,12 @@ class Order {
     required this.customerName,
     required this.items,
     this.payUrl,
+    this.driverId,
+    this.driverName,
+    this.driverPhone,
+    this.pickedUpAt,
+    this.driverDeliveredAt,
+    this.receivedAt,
   });
 
   bool get isDelivery => mode == 'delivery';
@@ -239,6 +253,9 @@ class Order {
   bool get paymentFailed => paymentStatus == 'failed' || paymentStatus == 'expired';
   int get itemCount => items.fold(0, (s, i) => s + i.quantity);
   bool get hasLocation => deliveryLat != null && deliveryLng != null;
+  bool get hasDriver => driverId != null;
+  /// Le livreur a indiqué « Livraison faite » : on attend le « Reçu » du client.
+  bool get awaitingReceipt => status == 'delivering' && driverDeliveredAt != null;
 
   factory Order.fromJson(Map<String, dynamic> j) => Order(
         id: _int(j['id']),
@@ -263,6 +280,40 @@ class Order {
         customerName: j['customer_name'] ?? '',
         items: ((j['items'] as List?) ?? []).map((e) => OrderItem.fromJson(e)).toList(),
         payUrl: j['pay_url'],
+        driverId: j['driver_id'] == null ? null : _int(j['driver_id']),
+        driverName: j['driver_name'],
+        driverPhone: j['driver_phone'],
+        pickedUpAt: j['picked_up_at'] == null ? null : _parseDate(j['picked_up_at']),
+        driverDeliveredAt: j['driver_delivered_at'] == null ? null : _parseDate(j['driver_delivered_at']),
+        receivedAt: j['received_at'] == null ? null : _parseDate(j['received_at']),
+      );
+}
+
+/// Livreur (vue admin).
+class Driver {
+  final int id;
+  final String name;
+  final String phone;
+  final bool active;
+  final int activeDeliveries; // en cours
+  final int deliveredCount; // total livrées
+
+  Driver({
+    required this.id,
+    required this.name,
+    required this.phone,
+    this.active = true,
+    this.activeDeliveries = 0,
+    this.deliveredCount = 0,
+  });
+
+  factory Driver.fromJson(Map<String, dynamic> j) => Driver(
+        id: _int(j['id']),
+        name: j['name'] ?? '',
+        phone: j['phone'] ?? '',
+        active: j['active'] == true || j['active'] == 1,
+        activeDeliveries: _int(j['active_deliveries']),
+        deliveredCount: _int(j['delivered_count']),
       );
 }
 
