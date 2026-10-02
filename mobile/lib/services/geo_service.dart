@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config.dart';
@@ -347,6 +348,161 @@ class GeoService {
     return display is String && display.trim().isNotEmpty ? display.trim() : null;
   }
 
+  // ---------------------------------------------------------------- Itinéraire
+
+  /// Itinéraire routier de [from] à [to]. Google Routes API si clé (deux-roues, sinon voiture),
+  /// sinon (ou en secours) OSRM. Résultat mis en cache ; `null` si aucun calcul n'aboutit.
+  /// Ne lève jamais d'exception.
+  Future<RouteResult?> route(LatLng from, LatLng to) {
+    final key = '${_routeKey(from)}>${_routeKey(to)}';
+    final cached = _routeCache[key];
+    if (cached != null) return Future.value(cached);
+    final pending = _routeInFlight[key];
+    if (pending != null) return pending;
+    final future = _computeRoute(from, to).timeout(_timeout, onTimeout: () => null).catchError((Object _) => null);
+    _routeInFlight[key] = future;
+    return future.then((r) {
+      _routeInFlight.remove(key);
+      if (r != null) {
+        if (_routeCache.length >= 60) _routeCache.remove(_routeCache.keys.first);
+        _routeCache[key] = r;
+      }
+      return r;
+    });
+  }
+
+  final Map<String, RouteResult> _routeCache = {};
+  final Map<String, Future<RouteResult?>> _routeInFlight = {};
+
+  /// Clé arrondie à 4 décimales (~10 m).
+  static String _routeKey(LatLng p) => '${p.latitude.toStringAsFixed(4)},${p.longitude.toStringAsFixed(4)}';
+
+  Future<RouteResult?> _computeRoute(LatLng from, LatLng to) async {
+    if (hasGoogleMapsKey) {
+      for (final mode in const ['TWO_WHEELER', 'DRIVE']) {
+        try {
+          final r = await _googleRoute(from, to, mode);
+          if (r != null) return r;
+        } catch (_) {
+          // Mode refusé (pays non couvert...) ou clé mal configurée : mode suivant, puis OSRM.
+        }
+      }
+    }
+    try {
+      return await _osrmRoute(from, to);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<RouteResult?> _googleRoute(LatLng from, LatLng to, String travelMode) async {
+    Map<String, dynamic> point(LatLng p) => {
+          'location': {
+            'latLng': {'latitude': p.latitude, 'longitude': p.longitude},
+          },
+        };
+    final res = await _client
+        .post(
+          Uri.parse('https://routes.googleapis.com/directions/v2:computeRoutes'),
+          headers: {
+            ...googleHeaders,
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': googleMapsApiKey,
+            'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline',
+          },
+          body: jsonEncode({
+            'origin': point(from),
+            'destination': point(to),
+            'travelMode': travelMode,
+            'languageCode': 'fr',
+            'regionCode': 'TG',
+            'units': 'METRIC',
+          }),
+        )
+        .timeout(const Duration(seconds: 6));
+    if (res.statusCode != 200) throw GeoException('routes ${res.statusCode}');
+    final data = jsonDecode(utf8.decode(res.bodyBytes));
+    final routes = data is Map ? data['routes'] : null;
+    if (routes is! List || routes.isEmpty || routes.first is! Map) return null; // Aucun trajet pour ce mode.
+    final r = routes.first as Map;
+    final poly = r['polyline'];
+    final encoded = poly is Map ? poly['encodedPolyline'] : null;
+    if (encoded is! String || encoded.isEmpty) return null;
+    final points = decodePolyline(encoded);
+    if (points.length < 2) return null;
+    // `duration` : chaîne du type « 754s ».
+    final seconds = double.tryParse('${r['duration'] ?? ''}'.replaceAll('s', '').trim());
+    return RouteResult(
+      points: points,
+      distanceMeters: _toDouble(r['distanceMeters'])?.round() ?? 0,
+      durationSeconds: seconds?.round() ?? 0,
+      source: 'google',
+    );
+  }
+
+  Future<RouteResult?> _osrmRoute(LatLng from, LatLng to) async {
+    String c(LatLng p) => '${p.longitude.toStringAsFixed(6)},${p.latitude.toStringAsFixed(6)}';
+    final uri = Uri.parse(
+      'https://router.project-osrm.org/route/v1/driving/${c(from)};${c(to)}?overview=full&geometries=geojson',
+    );
+    final res = await _client.get(uri, headers: {'User-Agent': _nominatimAgent}).timeout(_timeout);
+    if (res.statusCode != 200) throw GeoException('osrm ${res.statusCode}');
+    final data = jsonDecode(utf8.decode(res.bodyBytes));
+    if (data is! Map || data['code'] != 'Ok') return null;
+    final routes = data['routes'];
+    if (routes is! List || routes.isEmpty || routes.first is! Map) return null;
+    final r = routes.first as Map;
+    final geometry = r['geometry'];
+    final coords = geometry is Map ? geometry['coordinates'] : null;
+    if (coords is! List) return null;
+    final points = <LatLng>[];
+    for (final p in coords) {
+      if (p is! List || p.length < 2) continue;
+      final lng = _toDouble(p[0]);
+      final lat = _toDouble(p[1]);
+      if (lat != null && lng != null) points.add(LatLng(lat, lng));
+    }
+    if (points.length < 2) return null;
+    return RouteResult(
+      points: points,
+      distanceMeters: _toDouble(r['distance'])?.round() ?? 0,
+      durationSeconds: _toDouble(r['duration'])?.round() ?? 0,
+      source: 'osrm',
+    );
+  }
+
+  /// Décode une polyline encodée Google (précision 1e-5).
+  /// Ex. `_p~iF~ps|U_ulLnnqC_mqNvxq`@` → (38.5,-120.2), (40.7,-120.95), (43.252,-126.453).
+  static List<LatLng> decodePolyline(String encoded) {
+    final points = <LatLng>[];
+    var index = 0;
+    var lat = 0;
+    var lng = 0;
+    int next() {
+      var result = 0;
+      var shift = 0;
+      int b;
+      do {
+        if (index >= encoded.length) throw const FormatException('polyline tronquée');
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      return (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+    }
+
+    try {
+      while (index < encoded.length) {
+        lat += next();
+        lng += next();
+        points.add(LatLng(lat / 1e5, lng / 1e5));
+      }
+    } on FormatException {
+      // Fin corrompue : on garde les points déjà lus.
+    }
+    return points;
+  }
+
   // ---------------------------------------------------------------- Outils
 
   /// GET Nominatim : User-Agent dédié et au plus 1 requête par seconde (règle d'usage OSM).
@@ -387,6 +543,41 @@ class GeoService {
     return '${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-'
         '${h.substring(16, 20)}-${h.substring(20)}';
   }
+}
+
+/// Itinéraire calculé : tracé, distance et durée estimée.
+class RouteResult {
+  final List<LatLng> points;
+  final int distanceMeters;
+  final int durationSeconds;
+
+  /// `google` ou `osrm`.
+  final String source;
+
+  const RouteResult({
+    required this.points,
+    required this.distanceMeters,
+    required this.durationSeconds,
+    required this.source,
+  });
+
+  /// « 850 m », « 3,4 km », « 12 km ».
+  String get distanceLabel {
+    if (distanceMeters < 1000) return '${(distanceMeters / 10).round() * 10} m';
+    final km = distanceMeters / 1000;
+    final text = km < 10 ? km.toStringAsFixed(1) : km.round().toString();
+    return '${text.replaceAll('.', ',')} km';
+  }
+
+  /// « ~12 min », « ~1 h 05 ».
+  String get durationLabel {
+    final minutes = max(1, (durationSeconds / 60).round());
+    if (minutes < 60) return '~$minutes min';
+    return '~${minutes ~/ 60} h ${(minutes % 60).toString().padLeft(2, '0')}';
+  }
+
+  /// « 3,4 km • ~12 min ».
+  String get summary => '$distanceLabel • $durationLabel';
 }
 
 class GeoException implements Exception {

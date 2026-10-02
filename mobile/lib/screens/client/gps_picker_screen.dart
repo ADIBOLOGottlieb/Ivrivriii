@@ -7,9 +7,11 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../services/api.dart';
 import '../../services/geo_service.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
+import '../../widgets/route_map.dart';
 
 class LocationData {
   final double lat;
@@ -110,6 +112,15 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
   bool _resolving = true;
   LatLng? _resolvedFor;
 
+  // Itinéraire restaurant → épingle (seulement si la position du restaurant est connue).
+  static const _routeTolerance = 10.0;
+  LatLng? _restaurant;
+  RouteResult? _route;
+  LatLng? _routedFor;
+  bool _routing = false;
+  bool _routeFailed = false;
+  int _routeSeq = 0;
+
   @override
   void initState() {
     super.initState();
@@ -122,6 +133,7 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
     _center = _initialCenter;
     _tiles = _buildTiles();
     _initGoogleTiles();
+    _loadRestaurant();
     _scheduleSettle(const Duration(milliseconds: 300));
     if (hasInitial) {
       // Position déjà choisie : on affiche seulement le point bleu, sans déplacer la carte.
@@ -436,7 +448,59 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
     if (!mounted || _pointers.isNotEmpty || _animating) return;
     if (_moving) setState(() => _moving = false);
     _resolveAddress();
+    _updateRoute();
     _refreshCopyright();
+  }
+
+  // ------------------------------------------------------------------ Itinéraire
+
+  /// Position du restaurant (réglages), chargée une seule fois.
+  Future<void> _loadRestaurant() async {
+    try {
+      final s = await Api.instance.settings();
+      final lat = s.restaurantLat;
+      final lng = s.restaurantLng;
+      if (!mounted || lat == null || lng == null) return;
+      setState(() => _restaurant = LatLng(lat, lng));
+      if (!_moving && _pointers.isEmpty && !_animating) _updateRoute();
+    } catch (_) {
+      // Réglages indisponibles : carte sans itinéraire.
+    }
+  }
+
+  /// Recalcule l'itinéraire vers le point visé (appelé une fois la carte immobile).
+  /// La route précédente reste affichée pendant le calcul.
+  Future<void> _updateRoute() async {
+    final from = _restaurant;
+    if (from == null) return;
+    final point = _center;
+    final last = _routedFor;
+    if (last != null && _metersBetween(point, last) <= _routeTolerance) return;
+    final seq = ++_routeSeq;
+    _routedFor = point;
+    setState(() => _routing = true);
+    final r = await _geo.route(from, point);
+    if (!mounted || seq != _routeSeq) return;
+    setState(() {
+      _routing = false;
+      _routeFailed = r == null;
+      if (r != null) _route = r;
+      if (r == null) _routedFor = null; // Nouvel essai au prochain arrêt de la carte.
+    });
+  }
+
+  List<Polyline> _routeLines(LatLng from) {
+    final route = _route;
+    final target = _routedFor ?? _center;
+    if (route == null) {
+      // Itinéraire indisponible : simple ligne droite en pointillés.
+      return _routeFailed && !_routing ? [routePolyline([from, target], fallback: true)] : const [];
+    }
+    final lines = [routePolyline(route.points)];
+    // La route s'arrête sur la voie la plus proche : pointillés jusqu'à l'épingle.
+    final end = route.points.last;
+    if (_metersBetween(end, target) > 15) lines.add(routePolyline([end, target], fallback: true));
+    return lines;
   }
 
   Future<void> _resolveAddress() async {
@@ -789,6 +853,7 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
     final scheme = Theme.of(context).colorScheme;
     final userPos = _userPos;
     final userAccuracy = _userAccuracy;
+    final restaurant = _restaurant;
     final rotated = _rotation.abs() > 0.5;
     return Scaffold(
       appBar: AppBar(title: const Text('Ma position de livraison')),
@@ -818,6 +883,8 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
                   ),
                   children: [
                     _tiles,
+                    if (restaurant != null) PolylineLayer(polylines: _routeLines(restaurant)),
+                    if (restaurant != null) MarkerLayer(markers: [restaurantMarker(restaurant)]),
                     if (userPos != null && userAccuracy != null && userAccuracy > 0)
                       CircleLayer(
                         circles: [
@@ -1067,6 +1134,39 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
     );
   }
 
+  /// Distance et durée depuis le restaurant (estompées pendant le déplacement / le recalcul).
+  Widget _buildRouteInfo(ColorScheme scheme) {
+    final route = _route;
+    final stale = _moving || _routing;
+    final Widget content;
+    if (route != null) {
+      content = Text(
+        '${route.summary} depuis le restaurant',
+        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: scheme.onSurface),
+      );
+    } else if (_routing || (!_routeFailed && _routedFor == null)) {
+      content = Text('Calcul de l\'itinéraire…', style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant));
+    } else {
+      content = Text('Itinéraire indisponible', style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant));
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 150),
+        opacity: route != null && stale ? 0.5 : 1,
+        child: Row(
+          children: [
+            Icon(Icons.route_rounded, size: 16, color: route != null ? AppColors.red : scheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(child: content),
+            if (_routing)
+              const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildBottomPanel(ColorScheme scheme) {
     final coords = '${_center.latitude.toStringAsFixed(5)}, ${_center.longitude.toStringAsFixed(5)}';
     final accuracy = _accuracy;
@@ -1138,6 +1238,7 @@ class _GpsPickerScreenState extends State<GpsPickerScreen> with SingleTickerProv
                         ),
                         const SizedBox(height: 4),
                         ...details,
+                        if (_restaurant != null) _buildRouteInfo(scheme),
                       ],
                     ),
                   ),

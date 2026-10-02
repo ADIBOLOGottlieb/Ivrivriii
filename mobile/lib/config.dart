@@ -15,13 +15,13 @@ String resolveImageUrl(String? url) {
   return '$apiBaseUrl$url';
 }
 
-/// Clé Google Maps Platform (Map Tiles API, Places API (New), Geocoding API).
+/// Clé Google Maps Platform (Map Tiles API, Places API (New), Geocoding API, Routes API).
 ///
 /// Lue à la compilation : `flutter build apk --dart-define=GOOGLE_MAPS_API_KEY=...`
 /// Sans clé, la carte utilise automatiquement OpenStreetMap + Nominatim.
 /// Dans Google Cloud, restreindre la clé aux applications Android
 /// (package [androidPackageName] + empreinte SHA-1 du certificat de signature)
-/// et aux 3 API ci-dessus.
+/// et aux 4 API ci-dessus.
 const String googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
 
 bool get hasGoogleMapsKey => googleMapsApiKey.isNotEmpty;

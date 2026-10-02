@@ -91,11 +91,14 @@ L'APK doit toujours être signé avec **la même clé** : sinon Android refuse d
 
 Sans clé, l'app utilise automatiquement **OpenStreetMap**. Avec une clé, elle affiche les tuiles officielles Google (en français, région Togo), la recherche d'adresse Google et l'adresse du point choisi.
 
-1. Dans Google Cloud, créez une clé et activez **Map Tiles API**, **Places API (New)** et **Geocoding API**.
+1. Dans Google Cloud, créez une clé et activez **Map Tiles API**, **Places API (New)**, **Geocoding API** et **Routes API** (itinéraires).
 2. **Restreignez la clé** (*Identifiants* → la clé) :
    - *Restrictions d'application* → **Applications Android** : nom du package `com.ivrivrii.ivrivrii_chicken` + empreinte **SHA-1** du certificat qui signe l'APK (`keytool -list -v -keystore <votre.jks>`).
-   - *Restrictions d'API* : uniquement les trois API ci-dessus.
+   - *Restrictions d'API* : uniquement les quatre API ci-dessus.
 3. Sur GitHub (*Settings* → *Secrets and variables* → *Actions*), ajoutez le secret `GOOGLE_MAPS_API_KEY`. L'empreinte SHA-1 est calculée par la CI à partir de la clé de signature (voir « Signature de l'APK ») : elle doit être en place **avant** de restreindre la clé Google.
+
+### Itinéraires de livraison
+Placez d'abord le restaurant sur la carte (admin → **Plus → Paramètres → Position du restaurant**). L'itinéraire restaurant → client s'affiche ensuite sur la carte de choix de la position (avec distance et durée) et dans le détail de chaque commande en livraison, avec un bouton « Ouvrir dans Google Maps » pour le guidage du livreur. Avec une clé Google, le trajet est calculé par la **Routes API** (deux-roues, sinon voiture) ; sans clé, par **OSRM** (serveur public gratuit d'OpenStreetMap, sans garantie de service, durées calculées pour une voiture).
 
 La clé Google Maps est la seule clé présente dans l'APK : c'est pour cela qu'elle doit être restreinte.
 

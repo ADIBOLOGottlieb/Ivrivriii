@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../config.dart';
@@ -12,6 +13,7 @@ import '../../services/order_events.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
+import '../../widgets/route_map.dart';
 import '../client/payment_screen.dart';
 
 /// Détail et suivi d'une commande. En mode [admin], affiche les infos client
@@ -44,11 +46,15 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   late SmartPoller _poller;
   // Le client revient du navigateur après avoir payé : on rafraîchit aussitôt.
   late final AppLifecycleListener _lifecycle;
+  // Position du restaurant (départ de l'itinéraire), si l'admin l'a renseignée.
+  LatLng? _restaurant;
+  String? _restaurantAddress;
 
   @override
   void initState() {
     super.initState();
     _order = widget.initial;
+    _loadRestaurant();
 
     // Initialize smart poller with adaptive polling intervals based on order status.
     // Priorities: pending/confirmed (10s) > preparing/ready/delivering (5s) > finished (stop)
@@ -96,6 +102,21 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       setState(() => _error = null);
     } catch (e) {
       if (mounted && gen == _gen) setState(() => _error = e);
+    }
+  }
+
+  Future<void> _loadRestaurant() async {
+    try {
+      final s = await Api.instance.settings();
+      final lat = s.restaurantLat;
+      final lng = s.restaurantLng;
+      if (!mounted || lat == null || lng == null) return;
+      setState(() {
+        _restaurant = LatLng(lat, lng);
+        _restaurantAddress = s.restaurantAddress.trim().isEmpty ? null : s.restaurantAddress.trim();
+      });
+    } catch (_) {
+      // Réglages indisponibles : pas d'itinéraire.
     }
   }
 
@@ -252,6 +273,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final o = _order;
+    final restaurant = _restaurant;
     return Scaffold(
       appBar: AppBar(title: Text('Commande n°${widget.orderId}')),
       body: o == null
@@ -283,6 +305,32 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                   if (widget.admin) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(delay: const Duration(milliseconds: 140), child: _CustomerCard(order: o)),
+                  ],
+                  if (restaurant != null && o.isDelivery && o.hasLocation && !o.isCancelled) ...[
+                    const SizedBox(height: 16),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 170),
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Text('Itinéraire', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                              const SizedBox(height: 12),
+                              RouteMap(
+                                from: restaurant,
+                                to: LatLng(o.deliveryLat!, o.deliveryLng!),
+                                fromLabel: _restaurantAddress != null
+                                    ? 'Restaurant • $_restaurantAddress'
+                                    : 'Restaurant',
+                                toLabel: o.address ?? 'Point de livraison',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                   const SizedBox(height: 16),
                   FadeSlideIn(delay: const Duration(milliseconds: 200), child: _ItemsCard(order: o)),
