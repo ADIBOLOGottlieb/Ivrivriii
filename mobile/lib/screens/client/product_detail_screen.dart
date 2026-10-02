@@ -27,11 +27,26 @@ class ProductDetailScreen extends StatefulWidget {
 }
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
-  int _qty = 1;
+  late int _qty;
+  // Vrai si le plat était déjà au panier à l'ouverture : on fixe la quantité au lieu de l'ajouter.
+  late final bool _inCart;
   bool _added = false;
 
+  @override
+  void initState() {
+    super.initState();
+    final current = context.read<CartProvider>().quantityOf(widget.product.id);
+    _inCart = current > 0;
+    _qty = _inCart ? current.clamp(1, maxQuantityPerItem) : 1;
+  }
+
   Future<void> _add() async {
-    context.read<CartProvider>().add(widget.product, _qty);
+    final cart = context.read<CartProvider>();
+    if (_inCart && cart.quantityOf(widget.product.id) > 0) {
+      cart.setQuantity(widget.product.id, _qty);
+    } else {
+      cart.add(widget.product, _qty);
+    }
     setState(() => _added = true);
     await Future.delayed(const Duration(milliseconds: 750));
     if (mounted) Navigator.pop(context);
@@ -41,6 +56,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   Widget build(BuildContext context) {
     final p = widget.product;
     final topPad = MediaQuery.paddingOf(context).top;
+    final scheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       body: CustomScrollView(
@@ -89,7 +106,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                         margin: const EdgeInsets.only(bottom: 10),
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                         decoration: BoxDecoration(color: AppColors.yellow, borderRadius: BorderRadius.circular(20)),
-                        child: const Text('🔥 Populaire', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                        // Texte foncé fixe : le fond jaune ne change pas avec le thème.
+                        child: const Text('🔥 Populaire',
+                            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: AppColors.ink)),
                       ),
                     ),
                   FadeSlideIn(
@@ -104,7 +123,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                       delay: const Duration(milliseconds: 180),
                       child: Text(
                         p.description!,
-                        style: const TextStyle(color: AppColors.muted, fontSize: 15, height: 1.55),
+                        style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15, height: 1.55),
                       ),
                     ),
                   ],
@@ -113,11 +132,27 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                     delay: const Duration(milliseconds: 240),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(color: AppColors.cream, borderRadius: BorderRadius.circular(18)),
+                      // Crème en clair ; léger voile en sombre (le crème rendait le texte clair invisible).
+                      decoration: BoxDecoration(
+                        color: isDark ? scheme.onSurface.withValues(alpha: 0.08) : AppColors.cream,
+                        borderRadius: BorderRadius.circular(18),
+                      ),
                       child: Row(
                         children: [
-                          const Text('Quantité', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                          const Spacer(),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text('Quantité',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w700, fontSize: 16, color: scheme.onSurface)),
+                                if (_inCart)
+                                  Text('Déjà dans votre panier',
+                                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                              ],
+                            ),
+                          ),
                           QuantityStepper(value: _qty, min: 1, onChanged: (v) => setState(() => _qty = v)),
                         ],
                       ),
@@ -159,27 +194,38 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                         child: FadeTransition(opacity: anim, child: child),
                       ),
                       child: _added
-                          ? const Row(
-                              key: ValueKey('added'),
+                          ? Row(
+                              key: const ValueKey('added'),
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.check_circle_rounded, color: Colors.white),
-                                SizedBox(width: 8),
-                                Text('Ajouté au panier',
-                                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
+                                const Icon(Icons.check_circle_rounded, color: Colors.white),
+                                const SizedBox(width: 8),
+                                Text(_inCart ? 'Panier mis à jour' : 'Ajouté au panier',
+                                    style: const TextStyle(
+                                        color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
                               ],
                             )
-                          : Row(
+                          : Padding(
                               key: const ValueKey('add'),
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.shopping_bag_rounded, color: Colors.white),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Ajouter • ${formatPrice(p.price * _qty)}',
-                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                                ),
-                              ],
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(_inCart ? Icons.refresh_rounded : Icons.shopping_bag_rounded,
+                                      color: Colors.white),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      '${_inCart ? 'Mettre à jour le panier' : 'Ajouter au panier'}'
+                                      ' • ${formatPrice(p.price * _qty)}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                     ),
                   ),

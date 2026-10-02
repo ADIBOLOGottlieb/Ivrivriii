@@ -149,8 +149,11 @@ class QuantityStepper extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final size = compact ? 30.0 : 40.0;
+    // Bouton désactivé : voile de onSurface, visible sur toute surface claire ou sombre
+    // (surfaceContainerHighest n'est pas défini dans le thème et retombe sur surface).
+    final disabledBg = scheme.onSurface.withValues(alpha: 0.10);
     Widget btn(IconData icon, VoidCallback? onTap) => Material(
-          color: onTap == null ? scheme.surfaceContainerHighest : AppColors.red,
+          color: onTap == null ? disabledBg : AppColors.red,
           shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
@@ -191,7 +194,11 @@ class QuantityStepper extends StatelessWidget {
                       textAlign: TextAlign.center,
                       maxLines: 1,
                       softWrap: false,
-                      style: TextStyle(fontSize: compact ? 15 : 18, fontWeight: FontWeight.w800),
+                      style: TextStyle(
+                        fontSize: compact ? 15 : 18,
+                        fontWeight: FontWeight.w800,
+                        color: scheme.onSurface,
+                      ),
                     ),
                   ),
                 ),
@@ -317,7 +324,11 @@ class EmptyState extends StatelessWidget {
             Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             if (message != null) ...[
               const SizedBox(height: 8),
-              Text(message!, textAlign: TextAlign.center, style: const TextStyle(color: AppColors.muted)),
+              Text(
+                message!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
             ],
             if (action != null) ...[const SizedBox(height: 20), action!],
           ],
@@ -370,9 +381,10 @@ void showMessage(BuildContext context, Object message, {bool error = false}) {
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(
-      content: Text(message.toString()),
+      // Erreur : blanc sur rouge foncé ; sinon couleurs « inverse » du thème (lisibles en clair et sombre).
+      content: Text(message.toString(), style: error ? const TextStyle(color: Colors.white) : null),
       behavior: SnackBarBehavior.floating,
-      backgroundColor: error ? AppColors.darkRed : AppColors.ink,
+      backgroundColor: error ? AppColors.darkRed : null,
     ));
 }
 
@@ -389,6 +401,7 @@ Future<bool> confirmDialog(BuildContext context, String title, String message,
           style: FilledButton.styleFrom(
             minimumSize: const Size(0, 44),
             backgroundColor: danger ? AppColors.darkRed : AppColors.red,
+            foregroundColor: Colors.white,
           ),
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(confirm),
@@ -402,10 +415,14 @@ Future<bool> confirmDialog(BuildContext context, String title, String message,
 class Price extends StatelessWidget {
   final int amount;
   final double size;
-  final Color color;
-  const Price(this.amount, {super.key, this.size = 16, this.color = AppColors.red});
+  /// Par défaut : rouge de la marque en clair, rouge clair (primary) en sombre pour rester lisible.
+  final Color? color;
+  const Price(this.amount, {super.key, this.size = 16, this.color});
 
   @override
-  Widget build(BuildContext context) =>
-      Text(formatPrice(amount), style: TextStyle(fontSize: size, fontWeight: FontWeight.w800, color: color));
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final c = color ?? (theme.brightness == Brightness.dark ? theme.colorScheme.primary : AppColors.red);
+    return Text(formatPrice(amount), style: TextStyle(fontSize: size, fontWeight: FontWeight.w800, color: c));
+  }
 }

@@ -671,7 +671,11 @@ class _ProductTile extends StatelessWidget {
                         product.description!,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontSize: 12,
+                          height: 1.35,
+                        ),
                       ),
                     ],
                     const SizedBox(height: 8),
@@ -706,7 +710,7 @@ class _AddButton extends StatelessWidget {
       duration: const Duration(milliseconds: 260),
       switchInCurve: Curves.easeOutBack,
       transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
-      child: qty == 0 || small
+      child: qty == 0
           ? Material(
               key: const ValueKey('plus'),
               color: AppColors.red,
@@ -718,21 +722,33 @@ class _AddButton extends StatelessWidget {
                 child: SizedBox(
                   width: small ? 34 : 38,
                   height: small ? 34 : 38,
-                  child: small && qty > 0
-                      ? Center(
-                          child: Text('$qty',
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-                        )
-                      : const Icon(Icons.add_rounded, color: Colors.white),
+                  child: const Icon(Icons.add_rounded, color: Colors.white),
                 ),
               ),
             )
-          : QuantityStepper(
-              key: const ValueKey('stepper'),
-              compact: true,
-              value: qty,
-              onChanged: (v) => cart.setQuantity(product.id, v),
-            ),
+          // − à 1 retire l'article (min 0 → setQuantity(0)).
+          : small
+              // Sur la photo : pastille aux couleurs du thème pour que le chiffre reste lisible.
+              ? Material(
+                  key: const ValueKey('stepper'),
+                  color: Theme.of(context).colorScheme.surface,
+                  shape: const StadiumBorder(),
+                  elevation: 3,
+                  child: Padding(
+                    padding: const EdgeInsets.all(2),
+                    child: QuantityStepper(
+                      compact: true,
+                      value: qty,
+                      onChanged: (v) => cart.setQuantity(product.id, v),
+                    ),
+                  ),
+                )
+              : QuantityStepper(
+                  key: const ValueKey('stepper'),
+                  compact: true,
+                  value: qty,
+                  onChanged: (v) => cart.setQuantity(product.id, v),
+                ),
     );
   }
 }
