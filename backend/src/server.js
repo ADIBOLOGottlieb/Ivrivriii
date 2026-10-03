@@ -4,15 +4,54 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
-const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const { db, transaction, getSettings } = require('./db');
-const { signToken, requireAuth, requireAdmin, isInactive, INACTIVE_MESSAGE } = require('./auth');
+const authModule = require('./auth');
+const { requireAuth, requireAdmin } = authModule;
 const { seedIfEmpty } = require('./seed');
 const { log, requestLogger, lastHourMetrics } = require('./logger');
 const { audit, raiseAlert, checkOrder, startMonitoring, orderRate } = require('./monitor');
 const payments = require('./payments');
 const delivery = require('./delivery');
+const { ORDER_STATUSES, adminTransitionError } = require('./order-status');
+const notify = require('./notify');
+
+/** Téléphone normalisé (auth.js) ; repli : numéro tel quel. */
+const normalizePhone = (p) => (typeof authModule.normalizePhone === 'function' ? authModule.normalizePhone(p) : p) || p;
+
+/** Module optionnel (legal.js, sms.js...) : null s'il n'existe pas. */
+function optionalModule(name) {
+  try {
+    return require(name);
+  } catch (e) {
+    if (e.code === 'MODULE_NOT_FOUND' && String(e.message).includes(name.replace('./', ''))) return null;
+    throw e;
+  }
+}
+const legal = optionalModule('./legal');
+const sms = optionalModule('./sms');
+
+/** Réglages légaux et OTP exposés à l'app (fonctions de legal.js / sms.js, avec repli). */
+function accountSettings(req) {
+  let legalInfo = {};
+  try {
+    legalInfo = (typeof legal?.legalSettings === 'function' && legal.legalSettings(req)) || {};
+  } catch (err) {
+    log.warn('legalSettings', { error: err.message });
+  }
+  let otp = false;
+  try {
+    otp = typeof sms?.otpRequired === 'function' ? !!sms.otpRequired() : false;
+  } catch (err) {
+    log.warn('otpRequired', { error: err.message });
+  }
+  return {
+    otp_required: otp,
+    terms_version: legalInfo.terms_version ?? '2026-10',
+    terms_url: legalInfo.terms_url ?? '/legal/cgu',
+    privacy_url: legalInfo.privacy_url ?? '/legal/confidentialite',
+  };
+}
 
 seedIfEmpty();
 
@@ -47,13 +86,24 @@ app.use(payments.router);
 app.use(express.json({ limit: '100kb' }));
 
 // Compte client (profil, mot de passe, avatar, adresses...) : backend/src/account.js.
-let account = null;
-try {
-  account = require('./account');
-  app.use(account.router);
-} catch (e) {
-  if (e.code !== 'MODULE_NOT_FOUND') throw e;
-}
+// Suppression de son compte par un livreur : ses livraisons en cours repartent dans « À livrer ».
+// (req.user est rempli par requireAuth d'account.js ; on agit une fois la réponse envoyée.)
+app.delete('/api/auth/me', (req, res, next) => {
+  res.on('finish', () => {
+    if (res.statusCode < 300 && req.user?.id) {
+      try {
+        delivery.releaseDriverOrders(req.user.id, 'driver_account_deleted');
+      } catch (err) {
+        log.error('libération des livraisons', { userId: req.user.id, error: err.message });
+      }
+    }
+  });
+  next();
+});
+// Obligatoire : inscription et connexion sont dans account.js.
+app.use(require('./account').router);
+// Notifications push : enregistrement des jetons des appareils (push.js).
+app.use(require('./push').router);
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -75,8 +125,36 @@ const upload = multer({
 // Quantité maximale d'un même article dans une commande (une seule constante, exposée dans /api/settings).
 const MAX_QUANTITY_PER_ITEM = 999;
 
-const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivering', 'delivered', 'cancelled'];
 const PAYMENT_METHODS = ['cash', ...payments.MOBILE_METHODS];
+
+/** Texte facultatif : '' si absent, 400 si ce n'est pas une chaîne (évite les 500 sur `.trim()`). */
+function optText(value, label) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') throw httpError(400, `${label} invalide`);
+  return value.trim();
+}
+
+/** Pagination ?limit=&before_id= (défaut 50, max 200). */
+function pageParams(q) {
+  const limit = Math.min(Math.max(Number.parseInt(q.limit, 10) || 50, 1), 200);
+  const before = Number.parseInt(q.before_id, 10);
+  return { limit, beforeId: Number.isInteger(before) && before > 0 ? before : null };
+}
+
+/** Liste paginée (tri par id décroissant) + en-tête X-Has-More. */
+function sendPage(res, req, where, params) {
+  const { limit, beforeId } = pageParams(req.query);
+  const conds = where ? [where] : [];
+  const args = [...params];
+  if (beforeId) {
+    conds.push('o.id < ?');
+    args.push(beforeId);
+  }
+  const rows = loadOrders(conds.length ? `WHERE ${conds.join(' AND ')}` : '', args, { orderBy: 'o.id DESC', limit: limit + 1 });
+  res.set('X-Has-More', rows.length > limit ? '1' : '0');
+  res.set('Access-Control-Expose-Headers', 'X-Has-More');
+  res.json(rows.slice(0, limit).map((o) => presentOrder(o, req.user)));
+}
 
 // Transforme les erreurs levées (sync ou async) en réponses JSON.
 const h = (fn) => async (req, res) => {
@@ -94,21 +172,6 @@ function httpError(status, message) {
   return err;
 }
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 10,
-  skipSuccessfulRequests: true,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  message: { error: 'Trop de tentatives de connexion. Réessayez dans 15 minutes.' },
-});
-const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  limit: 5,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  message: { error: 'Trop de comptes créés depuis ce réseau. Réessayez plus tard.' },
-});
 const orderLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 10,
@@ -117,13 +180,6 @@ const orderLimiter = rateLimit({
   keyGenerator: (req) => (req.user ? `user-${req.user.id}` : ipKeyGenerator(req.ip)),
   message: { error: 'Trop de commandes en peu de temps. Patientez quelques minutes.' },
 });
-
-function basicPublicUser(u) {
-  return { id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, address: u.address, created_at: u.created_at };
-}
-const basePublicUser = account?.publicUser ?? basicPublicUser;
-// active : false pour un livreur désactivé (colonne absente d'une très vieille base = actif).
-const publicUser = (u) => ({ ...basePublicUser(u), active: !isInactive(u) });
 
 function mapProduct(p) {
   return { ...p, available: !!p.available, popular: !!p.popular };
@@ -168,39 +224,7 @@ function loadOrders(where, params, { orderBy = 'o.created_at DESC, o.id DESC', l
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: Math.round(process.uptime()) }));
 
-// ---------- Auth ----------
-
-app.post('/api/auth/register', registerLimiter, h((req, res) => {
-  const { name, phone, password, email, address } = req.body || {};
-  if (!name?.trim() || !phone?.trim() || !password) throw httpError(400, 'Nom, téléphone et mot de passe requis');
-  if (password.length < 6) throw httpError(400, 'Le mot de passe doit contenir au moins 6 caractères');
-  if (!/^\+?[\d\s]{8,16}$/.test(phone.trim())) throw httpError(400, 'Numéro de téléphone invalide');
-  if (db.prepare('SELECT id FROM users WHERE phone = ?').get(phone.trim())) {
-    throw httpError(409, 'Ce numéro est déjà utilisé');
-  }
-  const info = db
-    .prepare('INSERT INTO users (name, phone, email, password_hash, address) VALUES (?, ?, ?, ?, ?)')
-    .run(name.trim().slice(0, 80), phone.trim(), email?.trim() || null, bcrypt.hashSync(password, 10), address?.trim() || null);
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-  audit('register', { userId: user.id, ip: req.ip });
-  res.status(201).json({ token: signToken(user), user: publicUser(user) });
-}));
-
-app.post('/api/auth/login', loginLimiter, h((req, res) => {
-  const { phone, password } = req.body || {};
-  const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(String(phone || '').trim());
-  if (!user || !bcrypt.compareSync(String(password || ''), user.password_hash)) {
-    audit('login_failed', { userId: user?.id ?? null, details: { phone: String(phone || '').slice(0, 20) }, ip: req.ip });
-    throw httpError(401, 'Téléphone ou mot de passe incorrect');
-  }
-  // Compte désactivé (livreur) : mot de passe correct mais connexion refusée, avec un message clair.
-  if (isInactive(user)) {
-    audit('login_refused_inactive', { userId: user.id, ip: req.ip });
-    throw httpError(403, INACTIVE_MESSAGE);
-  }
-  audit(user.role === 'admin' ? 'admin_login' : user.role === 'driver' ? 'driver_login' : 'login', { userId: user.id, ip: req.ip });
-  res.json({ token: signToken(user), user: publicUser(user) });
-}));
+// Inscription, connexion, mot de passe oublié et compte : voir account.js.
 
 // ---------- Catalogue public ----------
 
@@ -219,7 +243,7 @@ function feeSettings() {
   };
 }
 
-app.get('/api/settings', h((_req, res) => {
+app.get('/api/settings', h((req, res) => {
   const s = getSettings();
   res.json({
     delivery_fee: s.delivery_fee,
@@ -235,6 +259,7 @@ app.get('/api/settings', h((_req, res) => {
     restaurant_lat: s.restaurant_lat,
     restaurant_lng: s.restaurant_lng,
     delivery_auto_confirm_hours: s.delivery_auto_confirm_hours,
+    ...accountSettings(req),
   });
 }));
 
@@ -267,12 +292,19 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   const settings = getSettings();
   if (!settings.is_open) throw httpError(400, 'Le restaurant est actuellement fermé');
 
-  const { items, mode, address, phone, note, payment_method, location } = req.body || {};
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const { items, mode, payment_method, location } = body;
   if (!Array.isArray(items) || items.length === 0 || items.length > 50) throw httpError(400, 'Votre panier est vide');
   if (!['delivery', 'pickup'].includes(mode)) throw httpError(400, 'Mode de retrait invalide');
-  if (mode === 'delivery' && !address?.trim()) throw httpError(400, 'Adresse de livraison requise');
-  if (!phone?.trim()) throw httpError(400, 'Numéro de téléphone requis');
+  const address = optText(body.address, 'Adresse');
+  const note = optText(body.note, 'Note');
+  if (mode === 'delivery' && !address) throw httpError(400, 'Adresse de livraison requise');
+  const rawPhone = optText(body.phone, 'Numéro de téléphone');
+  if (!rawPhone) throw httpError(400, 'Numéro de téléphone requis');
+  const phone = String(normalizePhone(rawPhone)).trim();
+  if (!/^\+?[\d\s-]{8,20}$/.test(phone) || phone.replace(/\D/g, '').length < 8) throw httpError(400, 'Numéro de téléphone invalide');
   if (!PAYMENT_METHODS.includes(payment_method)) throw httpError(400, 'Moyen de paiement invalide');
+  if (location != null && typeof location !== 'object') throw httpError(400, 'Position de livraison invalide');
   const loc = mode === 'delivery' ? parseLocation(location) : null;
 
   // Les prix sont toujours recalculés côté serveur à partir du catalogue.
@@ -307,8 +339,8 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        req.user.id, mode, mode === 'delivery' ? address.trim().slice(0, 300) : null, phone.trim().slice(0, 20),
-        note?.trim()?.slice(0, 300) || null, payment_method, subtotal, deliveryFee, subtotal + deliveryFee + paymentFee,
+        req.user.id, mode, mode === 'delivery' ? address.slice(0, 300) : null, phone.slice(0, 20),
+        note.slice(0, 300) || null, payment_method, subtotal, deliveryFee, subtotal + deliveryFee + paymentFee,
         paymentFee, paymentFeePercent, mobile ? 'pending' : 'unpaid', mobile ? payments.newToken() : null,
         loc?.lat ?? null, loc?.lng ?? null, loc?.accuracy ?? null,
       );
@@ -322,11 +354,13 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   const order = loadOrder(orderId);
   audit('order_created', { userId: req.user.id, details: { orderId, total: order.total, payment_method }, ip: req.ip });
   checkOrder(order, { name: order.customer_name });
+  notify.newOrder(order);
   res.status(201).json(presentOrder(order, req.user));
 }));
 
+// Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0.
 app.get('/api/orders', requireAuth, h((req, res) => {
-  res.json(loadOrders('WHERE o.user_id = ?', [req.user.id]).map((o) => presentOrder(o, req.user)));
+  sendPage(res, req, 'o.user_id = ?', [req.user.id]);
 }));
 
 app.get('/api/orders/:id', requireAuth, h((req, res) => {
@@ -343,8 +377,11 @@ app.post('/api/orders/:id/pay', requireAuth, h((req, res) => {
   if (!order || order.user_id !== req.user.id) throw httpError(404, 'Commande introuvable');
   if (!payments.isMobileMoney(order.payment_method)) throw httpError(400, 'Cette commande se paie en espèces');
   if (order.payment_status === 'paid') throw httpError(400, 'Cette commande est déjà payée');
+  if (order.payment_status === 'refunded') throw httpError(400, 'Cette commande a été remboursée : passez une nouvelle commande');
   if (order.status === 'cancelled') throw httpError(400, 'Cette commande est annulée');
-  db.prepare(`UPDATE orders SET payment_token = ?, payment_status = 'pending', updated_at = datetime('now') WHERE id = ?`)
+  if (order.status !== 'pending') throw httpError(400, 'Cette commande ne peut plus être payée en ligne');
+  db.prepare(`UPDATE orders SET payment_token = ?, payment_status = 'pending', updated_at = datetime('now')
+              WHERE id = ? AND payment_status NOT IN ('paid', 'refunded')`)
     .run(payments.newToken(), order.id);
   res.json(presentOrder(loadOrder(order.id), req.user));
 }));
@@ -356,7 +393,9 @@ app.post('/api/orders/:id/cancel', requireAuth, h((req, res) => {
   if (order.payment_status === 'paid') {
     throw httpError(400, 'Commande déjà payée : appelez le restaurant pour l\'annuler et être remboursé');
   }
-  db.prepare(`UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`).run(order.id);
+  const info = db.prepare(`UPDATE orders SET status = 'cancelled', updated_at = datetime('now')
+                           WHERE id = ? AND status = 'pending' AND payment_status NOT IN ('paid', 'refunded')`).run(order.id);
+  if (!info.changes) throw httpError(409, 'La commande vient de changer : rechargez-la');
   payments.cancelPendingAttempts(order.id, 'Commande annulée par le client');
   audit('order_cancelled', { userId: req.user.id, details: { orderId: order.id, by: 'client' }, ip: req.ip });
   res.json(presentOrder(loadOrder(order.id), req.user));
@@ -364,15 +403,20 @@ app.post('/api/orders/:id/cancel', requireAuth, h((req, res) => {
 
 // ---------- Admin ----------
 
+// Chiffre « encaissé ou à encaisser » : commande non annulée ET (espèces OU payée en ligne).
+const COUNTED = `status != 'cancelled' AND (payment_method = 'cash' OR payment_status = 'paid')`;
+
 app.get('/api/admin/stats', requireAdmin, h((_req, res) => {
   const today = db
     .prepare(
-      `SELECT COUNT(*) AS orders, COALESCE(SUM(CASE WHEN status != 'cancelled' THEN total END), 0) AS revenue
+      `SELECT COUNT(*) AS orders, COALESCE(SUM(CASE WHEN ${COUNTED} THEN total END), 0) AS revenue
        FROM orders WHERE date(created_at) = date('now')`,
     )
     .get();
+  // Total : commandes livrées, hors remboursées.
   const total = db
-    .prepare(`SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS revenue FROM orders WHERE status = 'delivered'`)
+    .prepare(`SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS revenue FROM orders
+              WHERE status = 'delivered' AND payment_status != 'refunded'`)
     .get();
   const active = db
     .prepare(`SELECT COUNT(*) AS n FROM orders WHERE status NOT IN ('delivered', 'cancelled')`)
@@ -384,13 +428,13 @@ app.get('/api/admin/stats', requireAdmin, h((_req, res) => {
     .prepare(
       `SELECT oi.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.unit_price) AS revenue
        FROM order_items oi JOIN orders o ON o.id = oi.order_id
-       WHERE o.status != 'cancelled' GROUP BY oi.name ORDER BY quantity DESC LIMIT 5`,
+       WHERE o.status != 'cancelled' AND o.payment_status != 'refunded' GROUP BY oi.name ORDER BY quantity DESC LIMIT 5`,
     )
     .all();
   const last7Days = db
     .prepare(
       `SELECT date(created_at) AS day, COUNT(*) AS orders,
-              COALESCE(SUM(CASE WHEN status != 'cancelled' THEN total END), 0) AS revenue
+              COALESCE(SUM(CASE WHEN ${COUNTED} THEN total END), 0) AS revenue
        FROM orders WHERE date(created_at) >= date('now', '-6 days')
        GROUP BY day ORDER BY day`,
     )
@@ -398,57 +442,69 @@ app.get('/api/admin/stats', requireAdmin, h((_req, res) => {
   res.json({ today, total, active, pending, customers, alerts, topProducts, last7Days });
 }));
 
+// Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0.
 app.get('/api/admin/orders', requireAdmin, h((req, res) => {
   const { status } = req.query;
-  let rows;
-  if (status === 'active') rows = loadOrders(`WHERE o.status NOT IN ('delivered', 'cancelled')`, []);
-  else if (status && ORDER_STATUSES.includes(status)) rows = loadOrders('WHERE o.status = ?', [status]);
-  else rows = loadOrders('', []);
-  res.json(rows.map((o) => presentOrder(o, req.user)));
+  if (status === 'active') sendPage(res, req, `o.status NOT IN ('delivered', 'cancelled')`, []);
+  else if (typeof status === 'string' && ORDER_STATUSES.includes(status)) sendPage(res, req, 'o.status = ?', [status]);
+  else sendPage(res, req, '', []);
 }));
 
 app.patch('/api/admin/orders/:id/status', requireAdmin, h((req, res) => {
   const { status } = req.body || {};
-  if (!ORDER_STATUSES.includes(status)) throw httpError(400, 'Statut invalide');
+  if (typeof status !== 'string' || !ORDER_STATUSES.includes(status)) throw httpError(400, 'Statut invalide');
   const order = loadOrder(Number(req.params.id));
   if (!order) throw httpError(404, 'Commande introuvable');
+  // Machine d'états (order-status.js) : statuts définitifs, livraison sans livreur, retrait...
+  const refused = adminTransitionError(order, status);
+  if (refused) throw httpError(400, refused);
+  if (order.status === status) return res.json(presentOrder(order, req.user));
   // Une commande mobile money n'est préparée qu'une fois le paiement reçu.
   if (status !== 'cancelled' && payments.isMobileMoney(order.payment_method) && order.payment_status !== 'paid') {
-    throw httpError(400, 'Paiement pas encore reçu : impossible de lancer la commande');
+    throw httpError(400, order.payment_status === 'refunded'
+      ? 'Commande remboursée : elle ne peut plus être lancée'
+      : 'Paiement pas encore reçu : impossible de lancer la commande');
   }
   // Retour à une étape avant la livraison : le livreur est retiré (la commande repart dans « À livrer »).
   const backBeforeDelivery = ['pending', 'confirmed', 'preparing', 'ready'].includes(status) && order.driver_id;
-  if (backBeforeDelivery) {
-    db.prepare(`UPDATE orders SET status = ?, driver_id = NULL, picked_up_at = NULL, driver_delivered_at = NULL,
-                  updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
-  } else {
-    db.prepare(`UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, order.id);
-  }
+  // Mise à jour conditionnée au statut lu : deux changements simultanés ne s'écrasent pas.
+  const info = backBeforeDelivery
+    ? db.prepare(`UPDATE orders SET status = ?, driver_id = NULL, picked_up_at = NULL, driver_delivered_at = NULL,
+                    updated_at = datetime('now') WHERE id = ? AND status = ?`).run(status, order.id, order.status)
+    : db.prepare(`UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = ?`)
+      .run(status, order.id, order.status);
+  if (!info.changes) throw httpError(409, 'La commande vient de changer : rechargez-la');
   if (status === 'cancelled') payments.cancelPendingAttempts(order.id, 'Commande annulée par le restaurant');
   audit('order_status', { userId: req.user.id, details: { orderId: order.id, from: order.status, to: status, driverId: order.driver_id ?? null, ...(backBeforeDelivery ? { driver_removed: true } : {}) }, ip: req.ip });
   if (status === 'cancelled' && order.payment_status === 'paid') {
     raiseAlert('refund_needed', 'warning', `Commande n°${order.id} annulée alors qu'elle est payée (${order.total} FCFA) : remboursement à prévoir`,
       { key: `order-${order.id}`, orderId: order.id }, 0);
   }
-  res.json(presentOrder(loadOrder(order.id), req.user));
+  const updated = loadOrder(order.id);
+  notify.statusChanged(updated, status);
+  res.json(presentOrder(updated, req.user));
 }));
 
 app.post('/api/admin/categories', requireAdmin, h((req, res) => {
-  const { name, icon, position } = req.body || {};
-  if (!name?.trim()) throw httpError(400, 'Nom requis');
+  const { position } = req.body || {};
+  const name = optText(req.body?.name, 'Nom');
+  const icon = optText(req.body?.icon, 'Icône');
+  if (!name) throw httpError(400, 'Nom requis');
   const info = db
     .prepare('INSERT INTO categories (name, icon, position) VALUES (?, ?, ?)')
-    .run(name.trim(), icon || null, Number(position) || 0);
+    .run(name, icon || null, Number(position) || 0);
   audit('category_created', { userId: req.user.id, details: { name }, ip: req.ip });
   res.status(201).json(db.prepare('SELECT * FROM categories WHERE id = ?').get(info.lastInsertRowid));
 }));
 
 app.put('/api/admin/categories/:id', requireAdmin, h((req, res) => {
-  const { name, icon, position } = req.body || {};
-  if (!name?.trim()) throw httpError(400, 'Nom requis');
+  const { position } = req.body || {};
+  const name = optText(req.body?.name, 'Nom');
+  const icon = optText(req.body?.icon, 'Icône');
+  if (!name) throw httpError(400, 'Nom requis');
   const info = db
     .prepare('UPDATE categories SET name = ?, icon = ?, position = ? WHERE id = ?')
-    .run(name.trim(), icon || null, Number(position) || 0, Number(req.params.id));
+    .run(name, icon || null, Number(position) || 0, Number(req.params.id));
   if (info.changes === 0) throw httpError(404, 'Catégorie introuvable');
   res.json(db.prepare('SELECT * FROM categories WHERE id = ?').get(Number(req.params.id)));
 }));
@@ -460,14 +516,16 @@ app.delete('/api/admin/categories/:id', requireAdmin, h((req, res) => {
 }));
 
 function productFields(body) {
-  const { name, description, price, image_url, category_id, available, popular } = body || {};
-  if (!name?.trim()) throw httpError(400, 'Nom requis');
+  const { price, category_id, available, popular } = body || {};
+  const name = optText(body?.name, 'Nom');
+  const description = optText(body?.description, 'Description');
+  const imageUrl = optText(body?.image_url, 'Image');
+  if (!name) throw httpError(400, 'Nom requis');
   const p = Math.round(Number(price));
   if (!(p > 0 && p < 10_000_000)) throw httpError(400, 'Prix invalide');
-  return [
-    category_id ? Number(category_id) : null, name.trim(), description?.trim() || null, p,
-    image_url?.trim() || null, available === false ? 0 : 1, popular ? 1 : 0,
-  ];
+  const cat = category_id ? Number(category_id) : null;
+  if (cat !== null && !Number.isInteger(cat)) throw httpError(400, 'Catégorie invalide');
+  return [cat, name, description || null, p, imageUrl || null, available === false ? 0 : 1, popular ? 1 : 0];
 }
 
 app.post('/api/admin/products', requireAdmin, h((req, res) => {
@@ -518,16 +576,30 @@ app.post('/api/admin/upload', requireAdmin, upload.single('image'), h((req, res)
   res.status(201).json({ url: `/uploads/${req.file.filename}` });
 }));
 
-app.get('/api/admin/users', requireAdmin, h((_req, res) => {
+// 200 comptes au plus ; ?q= recherche (nom, téléphone, e-mail).
+app.get('/api/admin/users', requireAdmin, h((req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 50) : '';
+  const params = [];
+  let where = '';
+  if (q) {
+    // « ! » sert de caractère d'échappement pour % et _ saisis par l'admin.
+    const like = `%${q.replace(/[!%_]/g, (c) => `!${c}`)}%`;
+    const digits = q.replace(/\D/g, '');
+    where = `WHERE (u.name LIKE ? ESCAPE '!' OR u.phone LIKE ? ESCAPE '!' OR u.email LIKE ? ESCAPE '!'${digits.length >= 3 ? ` OR REPLACE(REPLACE(u.phone, ' ', ''), '+', '') LIKE ?` : ''})`;
+    params.push(like, like, like);
+    if (digits.length >= 3) params.push(`%${digits}%`);
+  }
   res.json(
     db
       .prepare(
         `SELECT u.id, u.name, u.phone, u.email, u.role, u.address, u.created_at, u.active,
-                COUNT(o.id) AS orders_count, COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN o.total END), 0) AS total_spent
+                COUNT(o.id) AS orders_count,
+                COALESCE(SUM(CASE WHEN o.status = 'delivered' AND o.payment_status != 'refunded' THEN o.total END), 0) AS total_spent
          FROM users u LEFT JOIN orders o ON o.user_id = u.id
-         GROUP BY u.id ORDER BY u.created_at DESC`,
+         ${where}
+         GROUP BY u.id ORDER BY u.created_at DESC, u.id DESC LIMIT 200`,
       )
-      .all(),
+      .all(...params),
   );
 }));
 
@@ -604,6 +676,7 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     payment_mode: payments.paymentInfo().mode,
     payment_provider: payments.paymentInfo().provider,
     max_quantity_per_item: MAX_QUANTITY_PER_ITEM,
+    ...accountSettings(req),
   });
 }));
 

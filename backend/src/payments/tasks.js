@@ -11,6 +11,7 @@ const { audit, raiseAlert } = require('../monitor');
 const providers = require('./providers');
 const core = require('./core');
 const { fcfa } = require('./util');
+const notify = require('../notify');
 
 const WAITING_ALERT_MINUTES = 10;
 const SETTLEMENT_LATE_HOURS = 48;
@@ -29,6 +30,20 @@ async function refreshPending() {
     )
     .all();
   for (const p of late) await core.refreshAttempt(p, { force: true });
+  // Tentatives « failed » décidées chez nous (abandon, remplacement, annulation, erreur réseau) et non
+  // refusées par le prestataire : le client a pu valider quand même sur son téléphone.
+  // Payée → commande validée (ou, si annulée entre-temps, alerte critique « rembourser », voir handlePaid).
+  const failed = db
+    .prepare(
+      `SELECT p.* FROM payments p JOIN orders o ON o.id = p.order_id
+       WHERE p.status = 'failed' AND p.failure_kind IS NOT NULL AND p.needs_review = 0
+         AND p.updated_at >= datetime('now', '-30 minutes')
+         AND (p.last_checked_at IS NULL OR p.last_checked_at <= datetime('now', '-2 minutes'))
+         AND o.payment_status != 'refunded'
+       ORDER BY p.id LIMIT 20`,
+    )
+    .all();
+  for (const p of failed) await core.refreshAttempt(p, { force: true });
 }
 
 function alertWaiting() {
@@ -62,6 +77,7 @@ function autoCancelUnpaid() {
                 AND payment_status NOT IN ('paid', 'refunded')`)
       .run(o.id);
     if (!info.changes) continue;
+    notify.statusChanged(o, 'cancelled');
     audit('order_auto_cancelled', {
       details: { orderId: o.id, userId: o.user_id, payment_status: o.payment_status, total: o.total, after_minutes: minutes },
     });

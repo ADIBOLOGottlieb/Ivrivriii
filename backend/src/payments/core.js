@@ -16,6 +16,7 @@ const { audit, raiseAlert } = require('../monitor');
 const providers = require('./providers');
 const { httpError, fcfa, operatorLabel, normalizeMomoPhone, sqlTime, parseJson } = require('./util');
 const fees = require('./fees');
+const notify = require('../notify');
 
 const MOBILE_METHODS = ['flooz', 'mixx'];
 const isMobileMoney = (method) => MOBILE_METHODS.includes(method);
@@ -165,9 +166,11 @@ function handlePaid(p, { amount, operatorReference, providerReference, raw, vali
     );
     log.info('paiement validé', details);
     if (order.status === 'cancelled') {
-      raiseAlert('refund_needed', 'warning',
-        `Commande n°${order.id} payée (${fcfa(received)}) alors qu'elle est annulée : remboursement à prévoir`,
-        { key: `order-${order.id}`, orderId: order.id }, 0);
+      raiseAlert('refund_needed', 'critical',
+        `Argent reçu sur la commande annulée n°${order.id} (${fcfa(received)}, ${operatorLabel(p.operator)}) → rembourser le client`,
+        { key: `order-${order.id}`, orderId: order.id, paymentId: p.id }, 0);
+    } else {
+      notify.paymentReceived(order, received);
     }
   } else if (outcome === 'double') {
     audit('payment_double', { userId: validatedBy, details });
@@ -176,6 +179,26 @@ function handlePaid(p, { amount, operatorReference, providerReference, raw, vali
       { key: `payment-${p.id}`, ...details }, 0);
   }
   return getPayment(p.id);
+}
+
+/**
+ * Un paiement confirmé par le prestataire appartient-il bien à cette commande ?
+ * - la commande indiquée par le prestataire (metadata.order_id, KADEV) doit être celle de la tentative ;
+ * - une même référence prestataire ne peut payer qu'une seule commande.
+ * @returns message d'erreur, ou null si tout est cohérent
+ */
+function paidElsewhere(p, r) {
+  if (r.orderId !== undefined && r.orderId !== null && String(r.orderId) !== String(p.order_id)) {
+    return `le prestataire rattache ce paiement à la commande n°${r.orderId} : non validé`;
+  }
+  const ref = r.providerReference ?? p.provider_reference;
+  if (ref) {
+    const other = db
+      .prepare(`SELECT id, order_id FROM payments WHERE provider = ? AND provider_reference = ? AND order_id != ? AND status = 'paid' LIMIT 1`)
+      .get(p.provider, String(ref), p.order_id);
+    if (other) return `référence ${ref} déjà utilisée pour la commande n°${other.order_id} : non validé`;
+  }
+  return null;
 }
 
 /** Applique le résultat d'un checkStatus à une tentative. */
@@ -196,6 +219,14 @@ function applyCheck(id, r) {
       return getPayment(id);
     }
     if (p.needs_review && p.status === 'failed') return p; // écart déjà signalé
+    const mismatch = paidElsewhere(p, r);
+    if (mismatch) {
+      const updated = setAttemptStatus(id, 'failed', mismatch, { needs_review: 1, raw: JSON.stringify(r.raw ?? null), failure_kind: null });
+      raiseAlert('payment_reference_mismatch', 'critical', `Paiement n°${p.id} (commande n°${p.order_id}) : ${mismatch}`,
+        { key: `payment-${p.id}`, paymentId: p.id, orderId: p.order_id, providerReference: r.providerReference ?? p.provider_reference }, 0);
+      audit('payment_reference_mismatch', { details: { orderId: p.order_id, paymentId: p.id, message: mismatch, provider: p.provider } });
+      return updated;
+    }
     return handlePaid(p, {
       amount: r.amount ?? p.amount,
       operatorReference: r.operatorReference,
@@ -272,7 +303,9 @@ async function createAttempt(orderId, { phone, user, ip }) {
   if (previous?.status === 'pending') {
     const checked = await refreshAttempt(previous);
     if (checked.status === 'paid') return { order: getOrderRow(order.id), payment: checked };
-    if (checked.status === 'pending') setAttemptStatus(checked.id, 'failed', 'Remplacée par une nouvelle demande de paiement.');
+    if (checked.status === 'pending') {
+      setAttemptStatus(checked.id, 'failed', 'Remplacée par une nouvelle demande de paiement.', { failure_kind: 'replaced' });
+    }
   }
   order = getOrderRow(order.id);
   if (['paid', 'refunded'].includes(order.payment_status)) throw httpError(400, 'Cette commande est déjà payée');
@@ -299,7 +332,8 @@ async function createAttempt(orderId, { phone, user, ip }) {
     }
   } catch (err) {
     log.error('lancement du paiement', { orderId: order.id, paymentId: id, provider: provider.name, error: err.message });
-    payment = setAttemptStatus(id, 'failed', err.userMessage || 'Le service de paiement est momentanément indisponible. Réessayez dans un instant.');
+    payment = setAttemptStatus(id, 'failed', err.userMessage || 'Le service de paiement est momentanément indisponible. Réessayez dans un instant.',
+      { failure_kind: 'error' });
     audit('payment_failed', { userId: user.id, details: { orderId: order.id, paymentId: id, error: err.message } });
   }
   return { order: getOrderRow(order.id), payment };
@@ -323,7 +357,7 @@ async function abandonCurrent(orderId, { user, ip }) {
   if (payment.status === 'pending') payment = await refreshAttempt(payment); // payé entre-temps ?
   if (payment.status === 'paid') throw httpError(400, 'Ce paiement a déjà été reçu');
   if (['pending', 'expired'].includes(payment.status)) {
-    payment = setAttemptStatus(payment.id, 'failed', 'Paiement non abouti');
+    payment = setAttemptStatus(payment.id, 'failed', 'Paiement non abouti', { failure_kind: 'abandoned' });
   }
   if (!['paid', 'refunded'].includes(order.payment_status)) {
     db.prepare(`UPDATE orders SET payment_status = 'failed', updated_at = datetime('now') WHERE id = ?`).run(order.id);
@@ -335,6 +369,7 @@ async function abandonCurrent(orderId, { user, ip }) {
 /** Mode simulation : joue la saisie (ou non) du code PIN. `amount` optionnel pour tester un écart. */
 async function simulateCurrent(orderId, { user, result, amount, ip }) {
   if (providers.mainName() !== 'simulation') throw httpError(403, 'Simulation indisponible : paiements réels activés');
+  if (!providers.simulationAllowed()) throw httpError(403, 'Mode test désactivé');
   const order = getOrderRow(orderId);
   if (!order || order.user_id !== user.id) throw httpError(404, 'Commande introuvable');
   if (!['paid', 'failed'].includes(result)) throw httpError(400, 'Résultat attendu : paid ou failed');
@@ -356,7 +391,7 @@ async function simulateCurrent(orderId, { user, result, amount, ip }) {
 /** Annule les tentatives en attente d'une commande (commande annulée). */
 function cancelPendingAttempts(orderId, message = 'Commande annulée') {
   for (const p of db.prepare(`SELECT * FROM payments WHERE order_id = ? AND status = 'pending'`).all(Number(orderId))) {
-    setAttemptStatus(p.id, 'failed', message);
+    setAttemptStatus(p.id, 'failed', message, { failure_kind: 'cancelled' });
   }
 }
 

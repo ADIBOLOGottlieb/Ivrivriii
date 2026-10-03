@@ -38,7 +38,12 @@ module.exports = {
     const status = String(data.status || '').toLowerCase();
     if (res.ok && status === 'paid') {
       const amount = Number(data.amount);
-      return { status: 'paid', amount: Number.isFinite(amount) ? amount : undefined, operatorReference: data.operator_reference, raw: body };
+      // metadata.order_id (envoyé par la page /pay/:id) : vérifié par le cœur contre la commande de la tentative.
+      const orderId = data.metadata?.order_id ?? null;
+      return {
+        status: 'paid', amount: Number.isFinite(amount) ? amount : undefined, operatorReference: data.operator_reference,
+        orderId: orderId === null || orderId === undefined ? undefined : String(orderId), raw: body,
+      };
     }
     if (['failed', 'cancelled', 'canceled'].includes(status)) return { status: 'failed', message: 'Paiement refusé par KADEV PAY.', raw: body };
     return { status: 'pending', raw: body };

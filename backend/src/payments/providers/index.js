@@ -60,5 +60,10 @@ module.exports = {
   get: (name) => registry[name] || null,
   byOperator: () => ({ ...BY_OPERATOR }),
   isSimulation: () => Object.values(BY_OPERATOR).every((n) => n === 'simulation'),
+  /**
+   * Le client peut-il jouer le paiement simulé ? Jamais en production (NODE_ENV=production),
+   * sauf ALLOW_SIMULATION=1 (démo) : sinon un client validerait lui-même sa commande.
+   */
+  simulationAllowed: () => process.env.NODE_ENV !== 'production' || process.env.ALLOW_SIMULATION === '1',
   registry,
 };

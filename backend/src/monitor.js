@@ -94,6 +94,8 @@ function runChecks() {
 
     // Nettoyage : on garde 90 jours d'audit.
     db.prepare(`DELETE FROM audit_logs WHERE created_at < datetime('now', '-90 days')`).run();
+    // Alertes résolues de plus de 90 jours (les non résolues restent visibles).
+    db.prepare(`DELETE FROM alerts WHERE resolved = 1 AND created_at < datetime('now', '-90 days')`).run();
   } catch (err) {
     log.error('monitoring', { error: err.message });
   }

@@ -214,6 +214,9 @@ for (const [col, def] of [
   ['refund_reference', 'TEXT'],
   ['refunded_at', 'TEXT'],
   ['refunded_by', 'INTEGER'],
+  // Échec décidé chez nous (abandon, remplacement, annulation, erreur réseau) et non par le
+  // prestataire : la tentative est revérifiée pendant 30 min (argent reçu quand même ?).
+  ['failure_kind', 'TEXT'],
 ]) {
   addColumn('payments', col, def);
 }

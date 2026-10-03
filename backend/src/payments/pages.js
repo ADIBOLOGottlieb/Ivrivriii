@@ -106,6 +106,13 @@ router.get('/pay/:id', (req, res) => {
   const methodLabel = order.payment_method === 'flooz' ? 'Flooz (Moov Africa)' : 'Mixx by Yas';
   const provider = providers.forOperator(order.payment_method);
 
+  if (provider.name === 'simulation' && !providers.simulationAllowed()) {
+    return page(res, {
+      title: 'Paiement',
+      body: `<div class="card center"><p><b>Mode test désactivé.</b></p>
+        <p class="muted">Le paiement en ligne n'est pas encore activé : contactez le restaurant pour régler votre commande.</p></div>`,
+    });
+  }
   if (provider.name === 'simulation') {
     return page(res, {
       title: 'Paiement',
@@ -173,6 +180,7 @@ router.post('/pay/:id/simulate', express.urlencoded({ extended: false }), async 
   if (!order || providers.forOperator(order.payment_method).name !== 'simulation') {
     return res.status(404).type('text').send('Lien de paiement invalide.');
   }
+  if (!providers.simulationAllowed()) return res.status(403).type('text').send('Mode test désactivé.');
   if (!['paid', 'refunded'].includes(order.payment_status) && order.status !== 'cancelled') {
     const p = browserAttempt(order, providers.registry.simulation);
     const result = req.body.result === 'paid' ? 'paid' : 'failed';
@@ -185,6 +193,19 @@ router.post('/pay/:id/simulate', express.urlencoded({ extended: false }), async 
 
 /** Rattache une référence KADEV à la tentative de la commande puis la vérifie auprès de l'API. */
 async function confirmKadevReference(order, reference) {
+  // Une référence KADEV ne paie qu'une seule commande.
+  const elsewhere = db
+    .prepare(`SELECT id, order_id FROM payments WHERE provider = 'kadev' AND provider_reference = ? AND order_id != ? LIMIT 1`)
+    .get(reference, order.id);
+  if (elsewhere) {
+    raiseAlert('payment_reference_reuse', 'critical',
+      `Référence KADEV ${reference} présentée pour la commande n°${order.id} alors qu'elle appartient à la commande n°${elsewhere.order_id}`,
+      { key: `kadev-${reference}`, orderId: order.id, otherOrderId: elsewhere.order_id }, 60);
+    audit('payment_reference_reuse', { details: { orderId: order.id, otherOrderId: elsewhere.order_id, reference } });
+    const err = new Error('Référence de paiement déjà utilisée pour une autre commande');
+    err.status = 409;
+    throw err;
+  }
   const existing = db.prepare('SELECT * FROM payments WHERE provider_reference = ? AND order_id = ?').get(reference, order.id);
   const p = existing || browserAttempt(order, kadev);
   if (!existing) db.prepare('UPDATE payments SET provider_reference = ?, reference = ? WHERE id = ?').run(reference, reference, p.id);
@@ -200,6 +221,7 @@ router.post('/pay/:id/confirm', express.json(), async (req, res) => {
     const p = await confirmKadevReference(order, reference);
     res.json({ paid: p.status === 'paid' });
   } catch (err) {
+    if (err.status === 409) return res.status(409).json({ error: err.message });
     log.error('vérification KADEV', { orderId: order.id, error: err.message });
     res.status(502).json({ error: 'Vérification impossible, réessayez' });
   }
@@ -233,6 +255,12 @@ router.post('/api/payments/kadev/webhook', express.raw({ type: '*/*', limit: '10
   res.status(200).json({ received: true }); // Répondre vite ; le traitement continue.
   if (v.ignored) return;
   const known = db.prepare('SELECT * FROM payments WHERE provider_reference = ? ORDER BY id DESC').get(v.providerReference);
+  if (known && v.orderId != null && String(v.orderId) !== String(known.order_id)) {
+    raiseAlert('payment_reference_mismatch', 'critical',
+      `Webhook KADEV : référence ${v.providerReference} annoncée pour la commande n°${v.orderId}, connue pour la commande n°${known.order_id}`,
+      { key: `kadev-${v.providerReference}`, orderId: known.order_id }, 60);
+    return;
+  }
   const orderId = known?.order_id ?? v.orderId;
   const order = orderId && reloadOrder(Number(orderId));
   if (!order) return log.warn('webhook KADEV sans commande associée', { reference: v.providerReference });

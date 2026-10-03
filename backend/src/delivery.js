@@ -11,9 +11,16 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSettings } = require('./db');
-const { requireAuth, requireAdmin, requireDriver } = require('./auth');
+const authModule = require('./auth');
+const { requireAuth, requireAdmin, requireDriver } = authModule;
 const { log } = require('./logger');
 const { audit } = require('./monitor');
+const notify = require('./notify');
+
+/** Téléphone normalisé (auth.js) ; repli : numéro tel quel. */
+const normalizePhone = (p) => (typeof authModule.normalizePhone === 'function' ? authModule.normalizePhone(p) : p) || p;
+/** Déconnecte les autres sessions d'un compte (auth.js) ; sans effet si la fonction n'existe pas. */
+const bumpTokenVersion = (id) => (typeof authModule.bumpTokenVersion === 'function' ? authModule.bumpTokenVersion(id) : undefined);
 const { h, httpError } = require('./payments/util');
 const { isMobileMoney } = require('./payments/core');
 
@@ -82,10 +89,51 @@ function autoConfirmDeliveries() {
   return done;
 }
 
+/**
+ * Remet dans « À livrer » (ready, sans livreur) les livraisons en cours d'un livreur
+ * (désactivé, compte supprimé...). Celles déjà indiquées « Livraison faite » restent (attente du « Reçu »).
+ * @returns les identifiants des commandes libérées
+ */
+function releaseDriverOrders(driverId, reason, agentId = null) {
+  const rows = db
+    .prepare(`SELECT * FROM orders WHERE driver_id = ? AND status = 'delivering' AND driver_delivered_at IS NULL`)
+    .all(Number(driverId));
+  const released = [];
+  for (const o of rows) {
+    const info = db
+      .prepare(`UPDATE orders SET driver_id = NULL, picked_up_at = NULL, status = 'ready', updated_at = datetime('now')
+                WHERE id = ? AND driver_id = ? AND status = 'delivering' AND driver_delivered_at IS NULL`)
+      .run(o.id, Number(driverId));
+    if (!info.changes) continue;
+    released.push(o.id);
+    audit('delivery_released', { userId: agentId, details: { orderId: o.id, driverId: Number(driverId), reason } });
+    notify.readyForDrivers(o);
+  }
+  if (released.length) log.info('livraisons libérées', { driverId: Number(driverId), reason, orders: released });
+  return released;
+}
+
+/** Filet de sécurité : livraisons d'un livreur désactivé, supprimé ou qui n'est plus livreur. */
+function releaseOrphanDeliveries() {
+  const drivers = db
+    .prepare(
+      `SELECT DISTINCT o.driver_id AS id, u.role, u.active, u.deleted_at FROM orders o LEFT JOIN users u ON u.id = o.driver_id
+       WHERE o.status = 'delivering' AND o.driver_id IS NOT NULL AND o.driver_delivered_at IS NULL`,
+    )
+    .all();
+  let n = 0;
+  for (const d of drivers) {
+    const gone = !d.role || d.deleted_at || (d.role !== 'driver' && d.role !== 'admin') || Number(d.active ?? 1) === 0;
+    if (gone) n += releaseDriverOrders(d.id, !d.role || d.deleted_at ? 'driver_account_deleted' : 'driver_inactive').length;
+  }
+  return n;
+}
+
 function startDeliveryTasks() {
   const every = Number(process.env.DELIVERY_TASK_INTERVAL_MS) || 5 * 60 * 1000;
   const run = () => {
     try {
+      releaseOrphanDeliveries();
       autoConfirmDeliveries();
     } catch (err) {
       log.error('tâche livraisons', { error: err.message });
@@ -142,6 +190,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
       .run(req.user.id, order.id);
     if (!info.changes) throw httpError(409, 'Cette livraison a déjà été prise par un autre livreur');
     audit('driver_take', { userId: req.user.id, details: { orderId: order.id, driverId: req.user.id }, ip: req.ip });
+    notify.statusChanged(order, 'delivering');
     res.json(orderJson(order.id, req.user));
   }));
 
@@ -158,6 +207,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
         details: { orderId: order.id, driverId: req.user.id, payment_method: order.payment_method, total: order.total },
         ip: req.ip,
       });
+      notify.driverDelivered(order);
     }
     res.json(orderJson(order.id, req.user));
   }));
@@ -171,6 +221,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
                 WHERE id = ? AND driver_id = ? AND status = 'delivering'`)
       .run(order.id, req.user.id);
     audit('driver_release', { userId: req.user.id, details: { orderId: order.id, driverId: req.user.id }, ip: req.ip });
+    notify.readyForDrivers(order);
     res.json(orderJson(order.id, req.user));
   }));
 
@@ -234,7 +285,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
       return res.status(201).json(driverJson(user.id));
     }
     const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    const phone = typeof body.phone === 'string' && body.phone.trim() ? String(normalizePhone(body.phone.trim())).trim() : '';
     const password = typeof body.password === 'string' ? body.password : '';
     if (!name || !phone || !password) throw httpError(400, 'Nom, téléphone et mot de passe requis');
     if (password.length < 6) throw httpError(400, 'Le mot de passe doit contenir au moins 6 caractères');
@@ -279,6 +330,10 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
     if (sets.length) {
       db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...params, driver.id);
       audit('driver_updated', { userId: req.user.id, details: { driverId: driver.id, ...changed }, ip: req.ip });
+      // Nouveau mot de passe : les sessions ouvertes du livreur sont fermées.
+      if (changed.password) bumpTokenVersion(driver.id);
+      // Livreur désactivé : ses livraisons en cours repartent dans « À livrer ».
+      if (changed.active === false) releaseDriverOrders(driver.id, 'driver_inactive', req.user.id);
     }
     res.json(driverJson(driver.id));
   }));
@@ -298,6 +353,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
                       status = CASE WHEN status = 'delivering' THEN 'ready' ELSE status END, updated_at = datetime('now')
                     WHERE id = ?`).run(order.id);
         audit('order_unassigned', { userId: req.user.id, details: { orderId: order.id, driverId: order.driver_id }, ip: req.ip });
+        if (order.status === 'delivering') notify.readyForDrivers(order);
       }
       return res.json(orderJson(order.id, req.user));
     }
@@ -315,6 +371,8 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
         details: { orderId: order.id, driverId: driver.id, previousDriverId: order.driver_id ?? null, from: order.status },
         ip: req.ip,
       });
+      notify.deliveryAssigned(order, driver.id);
+      if (order.status !== 'delivering') notify.statusChanged(order, 'delivering');
     }
     res.json(orderJson(order.id, req.user));
   }));
@@ -322,4 +380,4 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
   return router;
 }
 
-module.exports = { createDeliveryRouter, startDeliveryTasks, autoConfirmDeliveries };
+module.exports = { createDeliveryRouter, startDeliveryTasks, autoConfirmDeliveries, releaseDriverOrders, releaseOrphanDeliveries };
