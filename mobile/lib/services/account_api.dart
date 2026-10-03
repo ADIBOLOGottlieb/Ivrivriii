@@ -61,15 +61,28 @@ Future<dynamic> _run(Future<http.Response> Function() send) async {
   }
 }
 
-/// Requête JSON avec corps (y compris pour DELETE), sans déconnexion automatique sur 401.
-Future<dynamic> _jsonRequest(String method, String path, Map<String, dynamic> body) {
+/// Requête JSON (corps facultatif, y compris pour DELETE), sans déconnexion automatique sur 401.
+/// [auth] = false pour les routes publiques (inscription, code, mot de passe oublié).
+Future<dynamic> rawJsonRequest(String method, String path, Map<String, dynamic>? body, {bool auth = true}) {
   return _run(() async {
-    final req = http.Request(method, _accountUri(path))
-      ..headers['Content-Type'] = 'application/json'
-      ..headers['Authorization'] = 'Bearer ${Api.instance.token}'
-      ..body = jsonEncode(body);
+    final req = http.Request(method, _accountUri(path));
+    if (body != null) {
+      req.headers['Content-Type'] = 'application/json';
+      req.body = jsonEncode(body);
+    }
+    final token = Api.instance.token;
+    if (auth && token != null) req.headers['Authorization'] = 'Bearer $token';
     return http.Response.fromStream(await req.send());
   });
+}
+
+Future<dynamic> _jsonRequest(String method, String path, Map<String, dynamic> body) =>
+    rawJsonRequest(method, path, body);
+
+/// Lit une réponse `{ token, user }` (null si le serveur ne renvoie pas de jeton).
+(String, AppUser)? sessionFromJson(dynamic body) {
+  if (body is! Map || body['token'] is! String || body['user'] is! Map) return null;
+  return (body['token'] as String, AppUser.fromJson(Map<String, dynamic>.from(body['user'] as Map)));
 }
 
 /// Profil à jour depuis le serveur.
@@ -79,9 +92,12 @@ Future<AppUser> fetchMe() => Api.instance.me();
 Future<AppUser> updateAccount(Map<String, dynamic> data) async =>
     AppUser.fromJson(await Api.instance.put('/auth/me', data) as Map<String, dynamic>);
 
-/// Change le mot de passe (l'ancien est obligatoire).
-Future<void> changePassword({required String oldPassword, required String newPassword}) async {
-  await _jsonRequest('PUT', '/auth/me/password', {'old_password': oldPassword, 'new_password': newPassword});
+/// Change le mot de passe (l'ancien est obligatoire). Les autres appareils sont déconnectés :
+/// le serveur renvoie un NOUVEAU jeton pour cet appareil (`{ token, user }`) ; null s'il n'y en a pas.
+Future<(String, AppUser)?> changePassword({required String oldPassword, required String newPassword}) async {
+  final body =
+      await _jsonRequest('PUT', '/auth/me/password', {'old_password': oldPassword, 'new_password': newPassword});
+  return sessionFromJson(body);
 }
 
 /// Envoie une nouvelle photo de profil (multipart, champ `image`).

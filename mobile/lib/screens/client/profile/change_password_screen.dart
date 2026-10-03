@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../../../providers/auth_provider.dart';
 import '../../../services/account_api.dart';
 import '../../../widgets/common.dart';
 
@@ -30,11 +32,14 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
+    final auth = context.read<AuthProvider>();
     setState(() => _saving = true);
     try {
-      await changePassword(oldPassword: _old.text, newPassword: _new.text);
+      final session = await changePassword(oldPassword: _old.text, newPassword: _new.text);
+      // Les autres appareils sont déconnectés : cet appareil garde la session avec le nouveau jeton.
+      if (session != null) await auth.applySession(session.$1, session.$2);
       if (!mounted) return;
-      showMessage(context, 'Mot de passe modifié');
+      showMessage(context, 'Mot de passe modifié. Vos autres appareils ont été déconnectés.');
       Navigator.pop(context);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);

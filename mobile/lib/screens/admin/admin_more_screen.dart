@@ -7,23 +7,40 @@ import '../../models_admin.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
 import '../../services/api.dart';
+import '../../services/auth_api.dart';
 import '../../services/delivery_api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import '../client/gps_picker_screen.dart';
 import '../client/profile_screen.dart';
+import '../legal/legal_screen.dart' show appVersion;
 import 'collections_screen.dart';
 import 'drivers_screen.dart';
+import 'password_resets_screen.dart';
 import 'payments_review_screen.dart';
 
-class AdminMoreScreen extends StatelessWidget {
+class AdminMoreScreen extends StatefulWidget {
   const AdminMoreScreen({super.key});
+
+  @override
+  State<AdminMoreScreen> createState() => _AdminMoreScreenState();
+}
+
+class _AdminMoreScreenState extends State<AdminMoreScreen> {
+  @override
+  void initState() {
+    super.initState();
+    refreshPasswordResetCount(); // badge « Mots de passe oubliés »
+  }
 
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
-    void open(Widget page) => Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+    Future<void> open(Widget page) async {
+      await Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+      refreshPasswordResetCount();
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Plus')),
@@ -52,6 +69,22 @@ class AdminMoreScreen extends StatelessWidget {
                   subtitle: const Text('Comptes, activation, livraisons en cours'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () => open(const DriversScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.lock_reset_rounded, color: AppColors.red),
+                  title: const Text('Mots de passe oubliés'),
+                  subtitle: const Text('Codes à communiquer aux clients'),
+                  trailing: ValueListenableBuilder<int>(
+                    valueListenable: passwordResetCount,
+                    builder: (_, n, _) => Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (n > 0) Badge(label: Text('$n'), backgroundColor: AppColors.red),
+                        const Icon(Icons.chevron_right_rounded),
+                      ],
+                    ),
+                  ),
+                  onTap: () => open(const PasswordResetsScreen()),
                 ),
                 if (user != null)
                   ListTile(
@@ -108,6 +141,13 @@ class AdminMoreScreen extends StatelessWidget {
           ),
           const SizedBox(height: 32),
           const Center(child: AppLogo(size: 80)),
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              'Ivrivrii Chicken • version $appVersion',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
         ],
       ),
     );

@@ -11,6 +11,7 @@ import '../../services/order_events.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
+import '../legal/legal_screen.dart';
 import 'profile/avatar.dart';
 import 'profile/change_password_screen.dart';
 import 'profile/delete_account_screen.dart';
@@ -143,6 +144,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ],
               ),
             ),
+            const _SectionLabel('Informations légales'),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.description_rounded, color: AppColors.red),
+                    title: Text(legalTitle(LegalDoc.terms)),
+                    subtitle: user.termsAcceptedAt == null
+                        ? null
+                        : Text('Acceptées le ${formatDateTime(user.termsAcceptedAt!)}'),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 20),
+                    onTap: () => openLegalDoc(context, LegalDoc.terms),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.privacy_tip_rounded, color: AppColors.red),
+                    title: Text(legalTitle(LegalDoc.privacy)),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 20),
+                    onTap: () => openLegalDoc(context, LegalDoc.privacy),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 20),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
@@ -169,7 +192,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             const Center(child: AppLogo(size: 70)),
             const SizedBox(height: 8),
             Center(
-              child: Text('Ivrivrii Chicken • v1.0.0', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+              child: Text('Ivrivrii Chicken • version $appVersion', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
             ),
           ],
         ),

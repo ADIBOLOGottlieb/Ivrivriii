@@ -5,6 +5,7 @@ import '../../providers/auth_provider.dart';
 import '../../theme.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
+import 'forgot_password_screen.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -97,8 +98,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: [
                     const Text('Connexion', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
                     const SizedBox(height: 4),
-                    const Text('Commandez vos plats préférés en quelques clics',
-                        style: TextStyle(color: AppColors.muted)),
+                    Text('Commandez vos plats préférés en quelques clics',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                     const SizedBox(height: 24),
                     TextFormField(
                       controller: _phone,
@@ -125,7 +126,19 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       validator: (v) => (v == null || v.isEmpty) ? 'Entrez votre mot de passe' : null,
                     ),
-                    const SizedBox(height: 24),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ForgotPasswordScreen(initialPhone: _phone.text.trim()),
+                          ),
+                        ),
+                        child: const Text('Mot de passe oublié ?'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     FilledButton(
                       onPressed: _loading ? null : _submit,
                       child: _loading
@@ -139,10 +152,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         context,
                         MaterialPageRoute(builder: (_) => const RegisterScreen()),
                       ),
-                      child: const Text.rich(TextSpan(
+                      child: Text.rich(TextSpan(
                         text: 'Pas encore de compte ? ',
-                        style: TextStyle(color: AppColors.muted),
-                        children: [
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        children: const [
                           TextSpan(
                             text: 'Créer un compte',
                             style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w800),
