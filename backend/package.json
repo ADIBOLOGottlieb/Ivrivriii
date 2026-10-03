@@ -2,11 +2,11 @@
   "name": "ivrivrii-backend",
   "version": "1.0.0",
   "description": "API de commande en ligne - Ivrivrii Chicken",
-  "main": "src/server.js",
+  "main": "src/start.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node src/start.js",
+    "dev": "node --watch src/start.js",
     "seed": "node src/seed.js",
     "test": "node --test test/*.test.js"
   },
