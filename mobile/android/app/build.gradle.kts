@@ -6,6 +6,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Notifications push (Firebase) : le plugin google-services n'est appliqué que si
+// android/app/google-services.json est présent (écrit par la CI depuis le secret GOOGLE_SERVICES_JSON).
+// Sans ce fichier, l'app se construit normalement et les notifications push sont simplement désactivées.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // Clé de signature fixe (même empreinte SHA-1 à chaque build : requise par la restriction
 // Android de la clé Google Maps, et pour installer les mises à jour par-dessus l'ancienne
 // version). android/key.properties est créé par la CI à partir des secrets GitHub et n'est
@@ -24,6 +31,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Requis par flutter_local_notifications (API java.time sur les anciens Android).
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -71,4 +80,8 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }

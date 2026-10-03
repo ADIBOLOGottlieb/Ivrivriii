@@ -68,10 +68,34 @@ jobs:
           sha1=$(keytool -list -v -keystore android/app/upload.jks -storepass "$KEYSTORE_PASSWORD" -alias ivrivrii | awk '/SHA1:/ {print $2}')
           echo "Empreinte SHA-1 : $sha1"
           echo "CERT_SHA1=$sha1" >> "$GITHUB_ENV"
+      # Notifications push (Firebase) : secret GOOGLE_SERVICES_JSON = contenu de google-services.json
+      # (brut ou encodé en base64), téléchargé depuis la console Firebase pour l'app Android
+      # com.ivrivrii.ivrivrii_chicken. Sans secret : APK construit sans notifications push.
+      - name: Configuration Firebase
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "::warning::Secret GOOGLE_SERVICES_JSON absent : APK sans notifications push."
+            exit 0
+          fi
+          if printf "%s" "$GOOGLE_SERVICES_JSON" | sed "s/^[[:space:]]*//" | grep -q "^{"; then
+            printf "%s" "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+          else
+            printf "%s" "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json 2>/dev/null || true
+          fi
+          # Fichier invalide ou d'une autre app : on le retire pour que le build réussisse quand même.
+          if ! jq -e ".client[] | select(.client_info.android_client_info.package_name == \"com.ivrivrii.ivrivrii_chicken\")" android/app/google-services.json > /dev/null 2>&1; then
+            echo "::warning::GOOGLE_SERVICES_JSON invalide ou sans l'app com.ivrivrii.ivrivrii_chicken : APK sans notifications push."
+            rm -f android/app/google-services.json
+            exit 0
+          fi
+          echo "google-services.json écrit : notifications push activées."
       # Clé Google Maps (restreinte au package Android + SHA-1) : secret GitHub GOOGLE_MAPS_API_KEY.
       # Sans secret, la valeur est vide et l'app utilise automatiquement OpenStreetMap.
       - run: >-
           flutter build apk --release
+          --build-number=${{ github.run_number }}
           --dart-define=API_URL=${{ github.event.inputs.api_url || 'https://ivrivrii-api.onrender.com' }}
           --dart-define=GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
           --dart-define=GOOGLE_ANDROID_CERT_SHA1=${{ env.CERT_SHA1 || secrets.GOOGLE_ANDROID_CERT_SHA1 }}
