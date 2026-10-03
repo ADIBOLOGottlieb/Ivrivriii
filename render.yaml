@@ -1,9 +1,10 @@
 # Déploiement de l'API sur Render (offre gratuite).
 # render.com → New → Blueprint → choisir ce dépôt : Render lit ce fichier.
 #
-# Offre gratuite : le serveur s'endort après 15 min sans visite (≈ 50 s de réveil)
-# et son disque est effacé à chaque redémarrage. La base est alors recréée avec le
-# menu de démonstration et le compte admin : parfait pour des tests, pas pour la production.
+# Offre gratuite : le serveur s'endort après 15 min sans visite (≈ 50 s de réveil) et son
+# disque est effacé à chaque redémarrage. Pour garder les données, renseignez BACKUP_GITHUB_REPO
+# et BACKUP_GITHUB_TOKEN (sauvegarde automatique dans un dépôt GitHub privé, restaurée au
+# démarrage). Sans elles, la base repart de zéro (menu de démonstration) à chaque redémarrage.
 services:
   - type: web
     name: ivrivrii-api
@@ -35,6 +36,10 @@ services:
       # Sans PAYGATE_AUTH_TOKEN, « paygate » retombe en simulation.
       - key: PAYMENT_PROVIDER
         value: simulation
+      # En production, la simulation est refusée aux clients (ils pourraient valider eux-mêmes leur
+      # paiement). "1" l'autorise pour une démonstration : à retirer avant d'encaisser de vrais clients.
+      - key: ALLOW_SIMULATION
+        value: "1"
       # Jeton API du compte marchand PayGate Global (tableau de bord PayGate → API).
       - key: PAYGATE_AUTH_TOKEN
         sync: false
@@ -63,3 +68,29 @@ services:
         sync: false
       - key: KADEV_WEBHOOK_SECRET
         sync: false
+      # ---------- Sauvegarde des données (dépôt GitHub privé) ----------
+      # « propriétaire/dépôt » et jeton fine-grained « Contents : Read and write » limité à ce dépôt.
+      - key: BACKUP_GITHUB_REPO
+        sync: false
+      - key: BACKUP_GITHUB_TOKEN
+        sync: false
+      # ---------- Notifications push (Firebase Cloud Messaging) ----------
+      # JSON du compte de service Firebase (brut ou base64). Sans lui : aucune notification.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      # ---------- SMS (code de vérification, mot de passe oublié) ----------
+      # none (défaut : mot de passe oublié traité par l'admin) | http (passerelle SMS) | log (dev).
+      - key: SMS_PROVIDER
+        value: none
+      # Passerelle http : URL avec {phone} et {text}, méthode, en-têtes JSON, corps facultatif.
+      - key: SMS_HTTP_URL
+        sync: false
+      - key: SMS_HTTP_METHOD
+        sync: false
+      - key: SMS_HTTP_HEADERS
+        sync: false
+      - key: SMS_HTTP_BODY
+        sync: false
+      # Adresse publique de l'API (liens des CGU et de la politique de confidentialité).
+      - key: PUBLIC_URL
+        value: https://ivrivrii-api.onrender.com

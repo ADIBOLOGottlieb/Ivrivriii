@@ -45,7 +45,7 @@ Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstrati
 | `PORT` | 4000 par défaut |
 | `JWT_SECRET` | **obligatoire en production** |
 | `DB_PATH` | chemin de la base SQLite |
-| `ADMIN_PHONE`, `ADMIN_PASSWORD` | compte admin créé au premier lancement |
+| `ADMIN_PHONE`, `ADMIN_PASSWORD` | compte admin créé au premier lancement (`ADMIN_PASSWORD` obligatoire en production) |
 | `TRUST_PROXY` | `1` derrière Render (vraies IP pour l'anti-abus) |
 | `PAYMENT_PROVIDER` | `simulation` (défaut), `paygate` (recommandé au Togo), `kadev`, `direct` |
 | `PAYMENT_PROVIDER_FLOOZ`, `PAYMENT_PROVIDER_MIXX` | prestataire différent par opérateur (facultatif) |
@@ -55,6 +55,11 @@ Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstrati
 | `PROVIDER_FEE_PERCENT_FLOOZ`, `PROVIDER_FEE_PERCENT_MIXX` (ou `PROVIDER_FEE_PERCENT` pour les deux) | commission exacte de votre contrat avec l'agrégateur, en % : ce sont les frais payés par le client (voir « Frais de paiement ») |
 | `KADEV_PUBLIC_KEY`, `KADEV_SECRET_KEY`, `KADEV_WEBHOOK_SECRET` | uniquement si `PAYMENT_PROVIDER=kadev` |
 | `PAYMENT_EXPIRY_SECONDS` | durée d'une demande de paiement (120 par défaut) |
+| `ALLOW_SIMULATION` | `1` : autorise le paiement simulé par le client en production (démonstration uniquement) |
+| `BACKUP_GITHUB_REPO`, `BACKUP_GITHUB_TOKEN` | sauvegarde automatique de la base et des photos dans un dépôt GitHub privé (voir § 7) |
+| `FIREBASE_SERVICE_ACCOUNT` | compte de service Firebase (JSON brut ou base64) : notifications push |
+| `SMS_PROVIDER`, `SMS_HTTP_URL`, `SMS_HTTP_METHOD`, `SMS_HTTP_HEADERS`, `SMS_HTTP_BODY` | passerelle SMS (codes de vérification, mot de passe oublié) ; `none` par défaut |
+| `PUBLIC_URL` | adresse publique de l'API (liens des CGU et de la confidentialité) |
 
 Aucune clé secrète ni aucun numéro marchand n'est écrit dans le code ou dans l'APK : tout passe par ces variables (sur Render : *Environment*).
 
@@ -172,19 +177,48 @@ Circuit d'une commande en livraison :
 
 Un livreur désactivé ne peut plus se connecter ; ses livraisons en cours restent visibles par l'admin, qui peut les réattribuer. Toutes ces actions sont inscrites au journal d'audit.
 
-## 7. Hébergement sur Render et données
+## 7. Comptes, notifications et pages légales
 
-`render.yaml` décrit le service (offre gratuite). ⚠️ **Sur l'offre gratuite, le disque n'est pas persistant** : à chaque redémarrage ou déploiement (et à chaque réveil après 15 min d'inactivité), la base de données **et** le dossier `uploads/` (photos du menu, photos de profil dans `uploads/avatars/`) sont effacés. Pour la production — et surtout dès que de vrais paiements circulent, sinon **l'historique des paiements est perdu** — utilisez un disque persistant (offre payante Render, `DB_PATH` sur le disque) ou un serveur avec stockage durable, et sauvegardez régulièrement la base.
+- **Mot de passe oublié** : le client saisit son numéro. Si une passerelle SMS est configurée, il reçoit un code par SMS ; sinon la demande apparaît chez l'admin (**Plus → Mots de passe oubliés**, notification + badge) avec le code à communiquer par appel ou WhatsApp.
+- **Vérification du numéro par SMS** à l'inscription : activée automatiquement dès qu'une passerelle SMS est configurée (`SMS_PROVIDER=http`). Aucun SMS gratuit n'existe au Togo : il faut un compte chez un fournisseur de SMS.
+- **Sessions** : changer ou réinitialiser son mot de passe déconnecte les autres appareils ; après un effacement de la base, les anciennes sessions sont refusées (un ancien client ne peut plus tomber sur le compte d'un autre).
+- **Numéros** : enregistrés au format `+228XXXXXXXX` (« 90 12 34 56 » et « +228 90123456 » sont le même compte).
+- **Notifications push** (Firebase, gratuit) : client (statut de commande, paiement, « confirmez la réception »), livreurs (commande prête, livraison attribuée), admin (nouvelle commande, paiement, mot de passe oublié). Mise en place :
+  1. console.firebase.google.com → créer un projet (offre gratuite Spark) → ajouter une app Android `com.ivrivrii.ivrivrii_chicken` ;
+  2. télécharger `google-services.json` → secret GitHub `GOOGLE_SERVICES_JSON` (contenu brut ou base64) ;
+  3. Paramètres du projet → Comptes de service → « Générer une nouvelle clé privée » → variable Render `FIREBASE_SERVICE_ACCOUNT`.
+  Sans ces réglages, l'app fonctionne normalement, sans notifications.
+- **CGU et politique de confidentialité** : acceptation obligatoire à l'inscription ; pages publiques `/legal/cgu` et `/legal/confidentialite` (l'adresse de la seconde est celle à donner à Google Play). ⚠️ Ce sont des modèles : faites-les relire par un juriste avant la publication.
 
-Autres points avant la production :
-- `JWT_SECRET` fort, `PAYMENT_PROVIDER` ≠ `simulation`.
-- Retirez `android:usesCleartextTraffic="true"` (AndroidManifest) et `NSAllowsArbitraryLoads` (Info.plist), utiles seulement pour le HTTP local.
+## 8. Hébergement sur Render et données
+
+`render.yaml` décrit le service (offre gratuite). ⚠️ **Sur l'offre gratuite, le disque n'est pas persistant** : à chaque redémarrage, déploiement ou réveil après 15 min d'inactivité, la base de données **et** le dossier `uploads/` (photos du menu et des profils) sont effacés.
+
+### Sauvegarde gratuite dans un dépôt GitHub privé
+1. Sur GitHub : **New repository** → par ex. `ivrivrii-sauvegardes`, **Private** (il peut rester vide).
+2. Jeton : *Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate* : **Only select repositories** → ce dépôt ; permission **Contents : Read and write** uniquement ; expiration la plus longue (notez la date pour le renouveler).
+3. Sur Render → service `ivrivrii-api` → *Environment* : `BACKUP_GITHUB_REPO` = `votre-compte/ivrivrii-sauvegardes`, `BACKUP_GITHUB_TOKEN` = le jeton.
+4. Les journaux Render doivent afficher « sauvegarde GitHub active » puis « sauvegarde envoyée ».
+
+Fonctionnement : au démarrage, la dernière sauvegarde est restaurée (jamais par-dessus une base non vide) ; ensuite, la base est envoyée au plus toutes les 60 s après un changement, toutes les 15 min et à l'arrêt du serveur ; les photos nouvelles sont envoyées une par une. Limites : jusqu'à ~60 s d'écritures perdues en cas d'arrêt brutal, et quelques secondes lors d'un redéploiement. Pour revenir à une version antérieure : remettre l'ancien `ivrivrii/ivrivrii.db` en dernier commit du dépôt, puis redémarrer le service. C'est une solution gratuite de secours ; pour une exploitation sérieuse, préférez un disque persistant (offre payante Render) ou une base hébergée.
+
+### Garder le serveur éveillé
+La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planifiées de plusieurs heures). Utilisez plutôt **UptimeRobot** (gratuit, sans carte bancaire) : *Add New Monitor* → type **HTTP(s)** → URL `https://ivrivrii-api.onrender.com/api/health` → intervalle **5 minutes**.
+
+### Avant la mise en service réelle
+- `PAYMENT_PROVIDER=paygate` (ou kadev) et **retirer `ALLOW_SIMULATION`** : en simulation, n'importe quel client peut valider lui-même son paiement.
+- Sauvegarde configurée (ci-dessus) ou disque persistant.
+- `ADMIN_PASSWORD` fort ; `JWT_SECRET` généré par Render.
+- Google Play : chaque build de la CI porte un numéro de version croissant (`--build-number`) ; l'APK de production n'autorise que HTTPS (HTTP réservé aux builds de développement).
 
 ## API (résumé)
 
 | Méthode | Route | Accès |
 |---|---|---|
-| POST | `/api/auth/register`, `/api/auth/login` | public |
+| POST | `/api/auth/register` (`accept_terms` obligatoire), `/api/auth/login`, `/api/auth/otp/request`, `/api/auth/otp/verify`, `/api/auth/password/forgot`, `/api/auth/password/reset` | public |
+| GET | `/api/legal`, `/legal/cgu`, `/legal/confidentialite` | public |
+| POST/DELETE | `/api/push/token` | connecté |
+| GET/POST | `/api/admin/password-resets` · POST `/api/admin/password-resets/:id/done` | admin |
 | GET/PUT/DELETE | `/api/auth/me` · PUT `/me/password` · POST/DELETE `/me/avatar` · GET `/me/stats` · `/me/addresses[/:id]` | connecté |
 | GET | `/api/settings`, `/api/categories`, `/api/products` | public |
 | POST/GET | `/api/orders` · GET `/api/orders/:id` · POST `/api/orders/:id/cancel` | client |
