@@ -1,140 +1,215 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
+import '../services/admin_api.dart' show paymentReviewCount;
 import '../services/api.dart';
+import '../services/auth_api.dart' show passwordResetCount;
+import '../services/push_service.dart';
+import '../services/shared_location.dart';
+import 'cart_provider.dart';
+
+void _log(String message) {
+  if (kDebugMode) debugPrint('[AuthProvider] $message');
+}
+
+/// Exécute [action] sans jamais lever (notifications : jamais bloquant).
+Future<void> _safe(String what, FutureOr<void> Function() action) async {
+  try {
+    await action();
+  } catch (e) {
+    _log('$what : $e');
+  }
+}
 
 class AuthProvider extends ChangeNotifier {
   static const _tokenKey = 'auth_token';
 
+  /// Panier à vider à la déconnexion et à rattacher au compte connecté.
+  final CartProvider? cart;
+
   AppUser? user;
   bool initializing = true;
+
+  /// Jeton enregistré mais serveur injoignable : on affiche l'écran « Connexion au serveur
+  /// impossible » (réessai), pas l'écran de connexion.
+  bool offline = false;
+
+  /// Nouvel essai de connexion en cours (écran hors ligne).
+  bool retrying = false;
+
+  /// La dernière déconnexion vient d'un jeton refusé par le serveur (401), pas de l'utilisateur.
+  bool sessionExpired = false;
+
   String? _lastError;
 
   bool get isLoggedIn => user != null;
   String? get lastError => _lastError;
 
-  AuthProvider() {
-    Api.instance.onUnauthorized = () => logout();
+  AuthProvider({this.cart}) {
+    Api.instance.onUnauthorized = _onUnauthorized;
   }
 
-  /// Initialize auth state from stored preferences
-  /// Handles offline mode gracefully - retains token if server is unreachable
+  /// Restaure la session enregistrée au démarrage.
   Future<void> init() async {
     try {
       // Réveille le serveur pendant l'écran d'accueil (jusqu'à 90 s sur l'offre gratuite) :
       // la connexion qui suit ne tombera pas sur un serveur endormi.
-      await Api.instance.wakeUp();
+      final awake = await Api.instance.wakeUp();
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString(_tokenKey);
-
       if (token != null) {
         Api.instance.token = token;
-        try {
-          // Attempt to verify token with server
-          user = await Api.instance.me();
-          _lastError = null;
-          debugPrint('[AuthProvider] Successfully verified token with server');
-        } on ApiException catch (e) {
-          debugPrint('[AuthProvider] Failed to verify token: $e (statusCode: ${e.statusCode})');
-
-          // 401 = Token is invalid or expired, clear it
-          if (e.statusCode == 401) {
-            debugPrint('[AuthProvider] Token is invalid (401) - clearing credentials');
-            await _clear();
-          } else if (e.isNetworkError) {
-            // Network error - keep token, user will be in "offline mode"
-            debugPrint('[AuthProvider] Network error during init - keeping token for offline mode');
-            _lastError = 'Mode hors ligne - vous pouvez continuer avec les données en cache';
-          } else {
-            // Other client errors - keep token but warn user
-            debugPrint('[AuthProvider] Client error during init: ${e.message}');
-            _lastError = e.message;
-          }
-        } catch (e) {
-          // Catch ALL other exceptions (not just ApiException)
-          debugPrint('[AuthProvider] Unexpected error during init: $e');
-          _lastError = 'Erreur lors de l\'initialisation: ${e.toString()}';
-          // Keep the token - user might be offline
+        if (awake) {
+          await _verifySession();
+        } else {
+          // Serveur injoignable après 90 s : inutile d'attendre encore, écran « Réessayer ».
+          offline = true;
+          _lastError = 'Connexion au serveur impossible';
         }
       }
     } catch (e) {
-      debugPrint('[AuthProvider] Fatal error during init: $e');
-      _lastError = 'Impossible d\'initialiser l\'authentification';
+      _log('Erreur au démarrage : $e');
+      _lastError = 'Impossible d\'initialiser la session';
     } finally {
-      // GUARANTEE: Always set initializing to false, even on error
       initializing = false;
       notifyListeners();
     }
   }
 
-  /// Login user with phone and password
-  /// Throws ApiException with user-friendly message on failure
+  /// Vérifie le jeton courant auprès du serveur (GET /auth/me).
+  /// 401 : session effacée. Autre erreur (réseau, serveur endormi...) : mode [offline].
+  Future<void> _verifySession() async {
+    final token = Api.instance.token;
+    if (token == null) return;
+    try {
+      final u = await Api.instance.me();
+      if (Api.instance.token != token) return; // session changée entre-temps
+      _startSession(u, register: true);
+      _log('Session vérifiée');
+    } on ApiException catch (e) {
+      if (Api.instance.token != token) return;
+      if (e.statusCode == 401) {
+        _log('Jeton refusé (401)');
+        sessionExpired = true;
+        await _clear();
+      } else {
+        _log('Serveur injoignable : $e');
+        offline = true;
+        _lastError = e.message;
+      }
+    } catch (e) {
+      if (Api.instance.token != token) return;
+      _log('Erreur inattendue : $e');
+      offline = true;
+      _lastError = 'Connexion au serveur impossible';
+    }
+  }
+
+  /// Écran hors ligne : nouvel essai de connexion au serveur.
+  Future<void> retryConnection() async {
+    if (!offline || retrying) return;
+    retrying = true;
+    notifyListeners();
+    try {
+      await _verifySession();
+    } finally {
+      retrying = false;
+      notifyListeners();
+    }
+  }
+
+  /// Connexion par téléphone et mot de passe. Lève une ApiException lisible en cas d'échec.
   Future<void> login(String phone, String password) async {
     try {
-      debugPrint('[AuthProvider] Attempting login for phone: $phone');
       final (token, u) = await Api.instance.login(phone, password);
-      await _save(token, u);
-      _lastError = null;
-      debugPrint('[AuthProvider] Login successful');
+      await applySession(token, u);
+      _log('Connexion réussie');
     } on ApiException catch (e) {
-      debugPrint('[AuthProvider] Login failed: $e');
       _lastError = e.message;
       rethrow;
     } catch (e) {
-      debugPrint('[AuthProvider] Unexpected error during login: $e');
-      _lastError = 'Erreur lors de la connexion: ${e.toString()}';
+      _log('Erreur de connexion : $e');
+      _lastError = 'Erreur lors de la connexion';
       rethrow;
     }
   }
 
-  /// Register new user account
-  /// Throws ApiException with user-friendly message on failure
+  /// Inscription (ancienne interface, gardée pour compatibilité).
   Future<void> register({
     required String name,
     required String phone,
     required String password,
     String? email,
     String? address,
+    bool acceptTerms = false,
+    String? otpToken,
   }) async {
     try {
-      debugPrint('[AuthProvider] Attempting registration for phone: $phone');
       final (token, u) = await Api.instance.register(
         name: name,
         phone: phone,
         password: password,
         email: email,
         address: address,
+        acceptTerms: acceptTerms,
+        otpToken: otpToken,
       );
-      await _save(token, u);
-      _lastError = null;
-      debugPrint('[AuthProvider] Registration successful');
+      await applySession(token, u);
+      _log('Inscription réussie');
     } on ApiException catch (e) {
-      debugPrint('[AuthProvider] Registration failed: $e');
       _lastError = e.message;
       rethrow;
     } catch (e) {
-      debugPrint('[AuthProvider] Unexpected error during registration: $e');
-      _lastError = 'Erreur lors de l\'inscription: ${e.toString()}';
+      _log('Erreur d\'inscription : $e');
+      _lastError = 'Erreur lors de l\'inscription';
       rethrow;
     }
   }
 
-  /// Update user profile information
-  /// Throws ApiException on failure
+  /// Installe une session reçue du serveur (connexion, inscription, mot de passe
+  /// réinitialisé ou changé : le serveur renvoie alors un nouveau jeton).
+  Future<void> applySession(String token, AppUser u) async {
+    // Autre compte que celui en mémoire : on nettoie d'abord l'ancien.
+    if (user != null && user!.id != u.id) await _clear();
+    final newSession = user?.id != u.id;
+    Api.instance.token = token;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_tokenKey, token);
+    } catch (e) {
+      _log('Jeton non enregistré : $e');
+    }
+    _startSession(u, register: newSession);
+    notifyListeners();
+  }
+
+  void _startSession(AppUser u, {required bool register}) {
+    user = u;
+    offline = false;
+    sessionExpired = false;
+    _lastError = null;
+    unawaited(cart?.attachUser(u.id));
+    if (register) {
+      unawaited(_safe('Notifications indisponibles', () => PushService.instance.registerForUser()));
+    }
+  }
+
+  /// Met à jour le profil. Lève une ApiException en cas d'échec.
   Future<void> updateProfile(Map<String, dynamic> data) async {
     try {
-      debugPrint('[AuthProvider] Updating user profile');
-      user = await Api.instance.updateMe(data);
+      final u = await Api.instance.updateMe(data);
+      if (user == null) return; // déconnecté entre-temps
+      user = u;
       _lastError = null;
       notifyListeners();
-      debugPrint('[AuthProvider] Profile updated successfully');
     } on ApiException catch (e) {
-      debugPrint('[AuthProvider] Failed to update profile: $e');
       _lastError = e.message;
       rethrow;
     } catch (e) {
-      debugPrint('[AuthProvider] Unexpected error during profile update: $e');
+      _log('Erreur de mise à jour du profil : $e');
       _lastError = 'Erreur lors de la mise à jour du profil';
       rethrow;
     }
@@ -153,64 +228,54 @@ class AuthProvider extends ChangeNotifier {
     if (user == null) return null;
     try {
       final u = await Api.instance.me();
-      if (user == null) return null;
+      if (user == null || user!.id != u.id) return null;
       user = u;
       notifyListeners();
       return u;
     } catch (e) {
-      debugPrint('[AuthProvider] refreshUser: $e');
+      _log('refreshUser : $e');
       return null;
     }
   }
 
-  /// Logout and clear all authentication data
+  /// Déconnexion volontaire.
   Future<void> logout() async {
-    try {
-      debugPrint('[AuthProvider] Logging out');
-      await _clear();
-      _lastError = null;
-      notifyListeners();
-      debugPrint('[AuthProvider] Logout successful');
-    } catch (e) {
-      debugPrint('[AuthProvider] Error during logout: $e');
-      _lastError = 'Erreur lors de la déconnexion';
-      // Continue logout even if there's an error
-      notifyListeners();
-    }
+    sessionExpired = false;
+    await _clear();
+    notifyListeners();
   }
 
-  /// Save token and user to persistent storage and API instance
-  Future<void> _save(String token, AppUser u) async {
-    try {
-      Api.instance.token = token;
-      user = u;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_tokenKey, token);
-      notifyListeners();
-    } catch (e) {
-      debugPrint('[AuthProvider] Error saving credentials: $e');
-      _lastError = 'Impossible de sauvegarder les données';
-      rethrow;
-    }
+  /// Jeton refusé par le serveur (401) pendant l'utilisation.
+  void _onUnauthorized() {
+    if (Api.instance.token == null) return;
+    sessionExpired = true;
+    unawaited(_clear().whenComplete(notifyListeners));
   }
 
-  /// Clear all authentication data from storage and API instance
+  /// Nettoyage centralisé de tout ce qui appartient au compte : jeton, profil, panier,
+  /// position Google Maps reçue, compteurs admin, jeton de notifications, caches.
   Future<void> _clear() async {
+    // Désinscription des notifications tant que le jeton est encore là (DELETE authentifié).
+    final unregister = _safe('Désinscription des notifications', () => PushService.instance.unregister());
+    Api.instance.token = null;
+    user = null;
+    offline = false;
+    retrying = false;
+    cart?.reset();
+    SharedLocationService.instance.reset();
+    paymentReviewCount.value = 0;
+    passwordResetCount.value = 0;
+    Api.instance.invalidateCache();
     try {
-      Api.instance.token = null;
-      user = null;
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_tokenKey);
-      Api.instance.clearCache();
     } catch (e) {
-      debugPrint('[AuthProvider] Error clearing credentials: $e');
-      // Set to null anyway even if there's an error
-      Api.instance.token = null;
-      user = null;
+      _log('Jeton non supprimé : $e');
     }
+    unawaited(unregister);
   }
 
-  /// Clear stored error message
+  /// Efface le message d'erreur.
   void clearError() {
     _lastError = null;
     notifyListeners();

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
@@ -54,7 +54,7 @@ class CircuitBreaker {
 
     if (_failureCount >= failureThreshold) {
       _isOpen = true;
-      debugPrint('[CircuitBreaker] Circuit opened after $_failureCount failures');
+      if (kDebugMode) debugPrint('[CircuitBreaker] Circuit opened after $_failureCount failures');
     }
   }
 
@@ -72,7 +72,7 @@ class CircuitBreaker {
     if (timeSinceLastFailure > resetTimeout) {
       _isOpen = false;
       _failureCount = 0;
-      debugPrint('[CircuitBreaker] Circuit reset after timeout');
+      if (kDebugMode) debugPrint('[CircuitBreaker] Circuit reset after timeout');
       return true;
     }
     return false;
@@ -97,32 +97,21 @@ class ApiCache {
   /// Cache a value with TTL
   void set<T>(String key, T value, Duration ttl) {
     _cache[key] = CacheEntry(value, ttl);
-    debugPrint('[Cache] Cached $key (TTL: ${ttl.inSeconds}s)');
   }
 
   /// Retrieve a cached value if it hasn't expired
   T? get<T>(String key) {
     final entry = _cache[key];
-    if (entry == null) {
-      debugPrint('[Cache] Cache miss: $key');
-      return null;
-    }
-
+    if (entry == null) return null;
     if (entry.isExpired) {
-      debugPrint('[Cache] Cache expired: $key');
       _cache.remove(key);
       return null;
     }
-
-    debugPrint('[Cache] Cache hit: $key');
     return entry.data as T;
   }
 
   /// Clear the entire cache
-  void clear() {
-    _cache.clear();
-    debugPrint('[Cache] Cache cleared');
-  }
+  void clear() => _cache.clear();
 
   /// Clear a specific cache entry
   void remove(String key) {
@@ -161,10 +150,25 @@ class Api {
         if (token != null) 'Authorization': 'Bearer $token',
       };
 
-  /// Log API events for debugging
+  /// Journal de mise au point : affiché seulement en mode debug (jamais de numéro de téléphone).
   void _log(String message) {
-    debugPrint('[API] $message');
+    if (kDebugMode) debugPrint('[API] $message');
     onLog?.call(message);
+  }
+
+  /// Réponse 401 reçue pour une requête envoyée avec [sentToken].
+  /// Ignorée si la session a changé entre-temps (déconnexion, nouveau jeton après un
+  /// changement de mot de passe). Pour une écriture, un 401 peut aussi signifier « mot de
+  /// passe incorrect » (changement de mot de passe, suppression du compte) : on revérifie
+  /// alors la session par GET /auth/me, qui ne déconnecte que si le jeton est vraiment refusé.
+  void _unauthorized(String? sentToken, {required bool read}) {
+    if (sentToken == null || sentToken != token) return;
+    if (read) {
+      _log('Received 401 - triggering logout');
+      onUnauthorized?.call();
+    } else {
+      unawaited(get('/auth/me').then((_) {}, onError: (_) {}));
+    }
   }
 
   /// Determine if an error is retryable
@@ -216,6 +220,7 @@ class Api {
     http.Response res;
     dynamic lastError;
     int? lastStatusCode;
+    final sentToken = token;
 
     // Retry loop
     for (int attempt = 0; attempt < attempts; attempt++) {
@@ -244,9 +249,8 @@ class Api {
         }
 
         // Handle 401 - Unauthorized
-        if (res.statusCode == 401 && token != null) {
-          _log('Received 401 - triggering logout');
-          onUnauthorized?.call();
+        if (res.statusCode == 401 && sentToken != null) {
+          _unauthorized(sentToken, read: retry);
           final msg = body is Map && body['error'] is String
               ? body['error'] as String
               : 'Session expirée. Veuillez vous reconnecter.';
@@ -367,14 +371,17 @@ class Api {
   /// Retrieve a cached value
   T? getCachedValue<T>(String key) => _cache.get<T>(key);
 
-  /// Clear cache
-  void clearCache() => _cache.clear();
+  /// Vide le cache (déconnexion, « tirer pour rafraîchir »...).
+  void invalidateCache() => _cache.clear();
+
+  /// Ancien nom de [invalidateCache].
+  void clearCache() => invalidateCache();
 
   // ---------- Auth ----------
 
   /// Login user with credentials
   Future<(String, AppUser)> login(String phone, String password) async {
-    _log('Logging in user: $phone');
+    _log('Logging in');
     _cache.remove('/auth/me');
     final r = await post('/auth/login', {'phone': phone, 'password': password});
     return (r['token'] as String, AppUser.fromJson(r['user']));
@@ -387,14 +394,18 @@ class Api {
     required String password,
     String? email,
     String? address,
+    bool acceptTerms = false,
+    String? otpToken,
   }) async {
-    _log('Registering new user: $phone');
+    _log('Registering new user');
     final r = await post('/auth/register', {
       'name': name,
       'phone': phone,
       'password': password,
       'email': email,
       'address': address,
+      'accept_terms': acceptTerms,
+      'otp_token': ?otpToken,
     });
     return (r['token'] as String, AppUser.fromJson(r['user']));
   }
@@ -427,10 +438,10 @@ class Api {
 
   // ---------- Catalogue ----------
 
-  /// Fetch app settings (cached 5 minutes)
-  Future<AppSettings> settings() async {
+  /// Réglages du restaurant (cache 5 min ; [fresh] : redemande au serveur).
+  Future<AppSettings> settings({bool fresh = false}) async {
     _log('Fetching app settings');
-    final cached = getCachedValue<AppSettings>('/settings');
+    final cached = fresh ? null : getCachedValue<AppSettings>('/settings');
     if (cached != null) return cached;
 
     final result = AppSettings.fromJson(await get('/settings'));
@@ -438,10 +449,10 @@ class Api {
     return result;
   }
 
-  /// Fetch product categories (cached 5 minutes)
-  Future<List<Category>> categories() async {
+  /// Catégories (cache 5 min ; [fresh] : redemande au serveur).
+  Future<List<Category>> categories({bool fresh = false}) async {
     _log('Fetching categories');
-    final cached = getCachedValue<List<Category>>('/categories');
+    final cached = fresh ? null : getCachedValue<List<Category>>('/categories');
     if (cached != null) return cached;
 
     final result = (await get('/categories') as List).map((e) => Category.fromJson(e)).toList();
@@ -449,11 +460,11 @@ class Api {
     return result;
   }
 
-  /// Fetch products (cached 5 minutes)
-  Future<List<Product>> products({bool all = false}) async {
+  /// Produits (cache 5 min ; [fresh] : redemande au serveur). [all] : y compris indisponibles (admin).
+  Future<List<Product>> products({bool all = false, bool fresh = false}) async {
     final endpoint = all ? '/products-all' : '/products';
-    _log('Fetching products (all=$all)');
-    final cached = getCachedValue<List<Product>>(endpoint);
+    _log('Fetching products (all=$all, fresh=$fresh)');
+    final cached = fresh ? null : getCachedValue<List<Product>>(endpoint);
     if (cached != null) return cached;
 
     final result = (await get('/products', all ? {'all': '1'} : null) as List)
@@ -625,9 +636,10 @@ class Api {
     final ext = file.path.split('.').last.toLowerCase();
     final subtype = ext == 'png' ? 'png' : (ext == 'webp' ? 'webp' : 'jpeg');
 
+    final sentToken = token;
     try {
       final req = http.MultipartRequest('POST', _uri('/admin/upload'))
-        ..headers['Authorization'] = 'Bearer $token'
+        ..headers['Authorization'] = 'Bearer $sentToken'
         ..files.add(
           await http.MultipartFile.fromPath(
             'image',
@@ -637,23 +649,41 @@ class Api {
         );
 
       final streamedResponse = await req.send().timeout(_requestTimeout);
-      final response = await http.Response.fromStream(streamedResponse);
+      final response = await http.Response.fromStream(streamedResponse).timeout(_requestTimeout);
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        dynamic body;
-        if (response.body.isNotEmpty) {
-          body = jsonDecode(utf8.decode(response.bodyBytes));
-        }
-        _circuitBreaker.recordSuccess();
-        return body['url'] as String;
+      dynamic body;
+      try {
+        if (response.bodyBytes.isNotEmpty) body = jsonDecode(utf8.decode(response.bodyBytes));
+      } catch (_) {
+        body = null;
       }
 
-      _circuitBreaker.recordFailure();
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        _circuitBreaker.recordSuccess();
+        if (body is Map && body['url'] is String) return body['url'] as String;
+        throw ApiException('Réponse inattendue du serveur après l\'envoi de l\'image.', response.statusCode);
+      }
+
+      final serverMsg = body is Map && body['error'] is String ? body['error'] as String : null;
+      if (response.statusCode == 401) {
+        _unauthorized(sentToken, read: true);
+        throw ApiException(serverMsg ?? 'Session expirée. Veuillez vous reconnecter.', 401);
+      }
+      // Seules les pannes du serveur (5xx) comptent pour le disjoncteur.
+      if (response.statusCode >= 500) _circuitBreaker.recordFailure();
       throw ApiException(
-        'Erreur lors du téléchargement (${response.statusCode})',
+        serverMsg ?? 'Erreur lors de l\'envoi de l\'image (${response.statusCode})',
         response.statusCode,
-        false,
+        response.statusCode >= 500,
       );
+    } on SocketException catch (e) {
+      _circuitBreaker.recordFailure();
+      throw ApiException('Impossible de joindre le serveur. Vérifiez votre connexion.', null, true, e);
+    } on http.ClientException catch (e) {
+      _circuitBreaker.recordFailure();
+      throw ApiException('Impossible de joindre le serveur. Vérifiez votre connexion.', null, true, e);
+    } on FileSystemException catch (e) {
+      throw ApiException('Impossible de lire cette image sur le téléphone.', null, false, e);
     } on TimeoutException catch (e) {
       _circuitBreaker.recordFailure();
       throw ApiException(

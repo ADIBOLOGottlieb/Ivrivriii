@@ -15,6 +15,8 @@ class AppUser {
   final String? address;
   final String? avatarUrl; // chemin relatif (/uploads/...) : passer par resolveImageUrl
   final String? momoPhone; // numéro mobile money préféré, pré-rempli au paiement
+  final bool phoneVerified; // numéro vérifié par code SMS
+  final DateTime? termsAcceptedAt; // acceptation des CGU et de la politique de confidentialité
 
   AppUser({
     required this.id,
@@ -25,6 +27,8 @@ class AppUser {
     this.address,
     this.avatarUrl,
     this.momoPhone,
+    this.phoneVerified = false,
+    this.termsAcceptedAt,
   });
 
   bool get isAdmin => role == 'admin';
@@ -39,6 +43,8 @@ class AppUser {
         address: j['address'],
         avatarUrl: j['avatar_url'],
         momoPhone: j['momo_phone'],
+        phoneVerified: j['phone_verified'] == true || j['phone_verified'] == 1,
+        termsAcceptedAt: j['terms_accepted_at'] == null ? null : _parseDate(j['terms_accepted_at']),
       );
 }
 
@@ -326,6 +332,12 @@ class AppSettings {
   // Position du restaurant (départ des itinéraires de livraison) ; null tant que l'admin ne l'a pas placée.
   final double? restaurantLat;
   final double? restaurantLng;
+  // Comptes : code SMS exigé à l'inscription (seulement si un prestataire SMS est configuré).
+  final bool otpRequired;
+  // Documents légaux (pages publiques servies par l'API).
+  final String termsVersion;
+  final String? termsUrl;
+  final String? privacyUrl;
   /// Taux Flooz (compatibilité) : préférer [feePercentFor].
   final double paymentFeePercent;
   /// Taux des frais par opérateur ('flooz', 'mixx') = commission de l'agrégateur ou réglage admin.
@@ -347,6 +359,10 @@ class AppSettings {
     required this.restaurantAddress,
     this.restaurantLat,
     this.restaurantLng,
+    this.otpRequired = false,
+    this.termsVersion = '',
+    this.termsUrl,
+    this.privacyUrl,
     this.paymentFeePercent = 2,
     Map<String, double>? paymentFeePercentByOperator,
     this.paymentFeeSource = 'settings',
@@ -381,6 +397,10 @@ class AppSettings {
       restaurantAddress: j['restaurant_address'] ?? '',
       restaurantLat: (j['restaurant_lat'] as num?)?.toDouble(),
       restaurantLng: (j['restaurant_lng'] as num?)?.toDouble(),
+      otpRequired: j['otp_required'] == true,
+      termsVersion: j['terms_version'] ?? '',
+      termsUrl: j['terms_url'],
+      privacyUrl: j['privacy_url'],
       paymentFeePercent: percent,
       paymentFeePercentByOperator: byOp,
       paymentFeeSource: j['payment_fee_source'] == 'aggregator' ? 'aggregator' : 'settings',

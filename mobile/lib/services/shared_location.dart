@@ -47,7 +47,7 @@ class SharedLocationService {
       if (text != null && text.trim().isNotEmpty) unawaited(handleSharedText(text));
     } catch (e) {
       // Pas de canal natif (iOS, tests) ou délai dépassé : rien à faire.
-      debugPrint('Partage initial indisponible : $e');
+      if (kDebugMode) debugPrint('Partage initial indisponible : $e');
     }
   }
 
@@ -75,5 +75,14 @@ class SharedLocationService {
     final value = pending.value;
     pending.value = null;
     return value;
+  }
+
+  /// Déconnexion : oublie la position reçue (elle ne doit pas servir au compte suivant)
+  /// et ignore le résultat d'une analyse encore en cours.
+  void reset() {
+    _seq++;
+    pending.value = null;
+    failure.value = null;
+    resolving.value = false;
   }
 }
