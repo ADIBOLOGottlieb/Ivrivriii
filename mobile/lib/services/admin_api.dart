@@ -23,6 +23,39 @@ List<Map<String, dynamic>> _list(dynamic v) => v is List ? v.map(_map).toList() 
 String _ymd(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
+// ---------- Listes de commandes paginées (client et admin) ----------
+
+/// Taille d'une page de commandes (« Charger plus »).
+const ordersPageSize = 50;
+
+/// Une page de commandes, des plus récentes aux plus anciennes. [beforeId] : commandes plus
+/// anciennes que celle-ci. Il en reste probablement d'autres si la page est pleine.
+Future<List<Order>> fetchOrdersPage({
+  bool admin = false,
+  String? status,
+  int? beforeId,
+  int limit = ordersPageSize,
+}) async {
+  final r = await Api.instance.get(admin ? '/admin/orders' : '/orders', {
+    'limit': '$limit',
+    'before_id': ?beforeId?.toString(),
+    'status': ?status,
+  });
+  return r is List ? r.map((e) => Order.fromJson(_map(e))).toList() : <Order>[];
+}
+
+/// Remplace la première page par sa version à jour en gardant les pages plus anciennes
+/// déjà chargées (si la première page est incomplète, elle contient tout).
+List<Order> mergeFirstPage(List<Order> firstPage, List<Order>? current, {int limit = ordersPageSize}) {
+  if (firstPage.length < limit || current == null || current.isEmpty) return firstPage;
+  final oldest = firstPage.map((o) => o.id).reduce((a, b) => a < b ? a : b);
+  return [...firstPage, ...current.where((o) => o.id < oldest)];
+}
+
+/// Plus petit identifiant de la liste (curseur `before_id` pour la page suivante).
+int? oldestOrderId(List<Order>? orders) =>
+    orders == null || orders.isEmpty ? null : orders.map((o) => o.id).reduce((a, b) => a < b ? a : b);
+
 // ---------- Paiements à vérifier ----------
 
 Future<List<PaymentReview>> fetchPaymentsReview() async {

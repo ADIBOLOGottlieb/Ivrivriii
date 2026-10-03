@@ -1,195 +1,145 @@
 import 'dart:async';
 
-/// Smart polling manager that adjusts interval based on order status.
-/// Reduces server load by polling less frequently for stable statuses.
+import 'package:flutter/widgets.dart';
+
+/// Rafraîchissement périodique économe : aucune requête quand l'application est en
+/// arrière-plan, quand l'écran est caché (pause manuelle : onglet masqué) ou recouvert
+/// par un autre écran ([canPoll]), ni quand le statut ne demande plus de suivi.
 class SmartPoller {
-  Timer? _timer;
-  final Duration Function(String status)? getInterval;
   final Future<void> Function() onPoll;
-  String _lastStatus = '';
-  // Vrai après stop() : une vérification encore en cours ne doit pas en reprogrammer une autre.
-  bool _stopped = false;
 
-  SmartPoller({
-    required this.onPoll,
-    this.getInterval,
-  });
+  /// Intervalle selon le statut ; `null` (ou plus de 30 min) = pas de suivi.
+  final Duration? Function(String status)? getInterval;
 
-  /// Get default poll interval based on order status.
-  /// Priority levels: urgent (5s) > active (10s) > stable (no poll)
-  static Duration getDefaultInterval(String status) {
-    // Urgent: order is being prepared or delivered
-    if (['preparing', 'ready', 'delivering'].contains(status)) {
-      return const Duration(seconds: 5);
-    }
-    // Active: order just placed or confirmed
-    if (['pending', 'confirmed'].contains(status)) {
-      return const Duration(seconds: 10);
-    }
-    // Stable: order finished or cancelled - no polling needed
-    return const Duration(hours: 1); // Effectively disabled
+  /// Condition supplémentaire vérifiée à chaque échéance (ex. écran au premier plan).
+  final bool Function()? canPoll;
+
+  Timer? _timer;
+  AppLifecycleListener? _lifecycle;
+  String _status = '';
+  bool _stopped = true;
+  bool _paused = false; // pause manuelle (onglet caché, écran recouvert)
+  bool _background = false; // application en arrière-plan
+  bool _polling = false; // une requête est en cours
+
+  SmartPoller({required this.onPoll, this.getInterval, this.canPoll});
+
+  /// Intervalle par défaut selon le statut d'une commande.
+  static Duration? getDefaultInterval(String status) {
+    if (const ['preparing', 'ready', 'delivering'].contains(status)) return const Duration(seconds: 5);
+    if (const ['pending', 'confirmed'].contains(status)) return const Duration(seconds: 10);
+    return null; // commande terminée : plus de suivi
   }
 
-  /// Start polling with adaptive interval.
+  Duration? _intervalFor(String status) {
+    final d = getInterval != null ? getInterval!(status) : getDefaultInterval(status);
+    if (d == null || d > const Duration(minutes: 30)) return null;
+    return d;
+  }
+
+  static bool _foreground(AppLifecycleState? s) =>
+      s == null || s == AppLifecycleState.resumed || s == AppLifecycleState.inactive;
+
+  /// Démarre le suivi (à appeler une fois, dans initState).
   void startPolling(String initialStatus) {
-    _lastStatus = initialStatus;
+    _status = initialStatus;
     _stopped = false;
-    _scheduleNextPoll();
+    _background = !_foreground(WidgetsBinding.instance.lifecycleState);
+    _lifecycle ??= AppLifecycleListener(onStateChange: _onAppState);
+    _schedule();
   }
 
-  /// Stop polling (call in dispose()).
+  /// Arrête définitivement (dans dispose()).
   void stop() {
     _stopped = true;
+    _cancel();
+    _lifecycle?.dispose();
+    _lifecycle = null;
+  }
+
+  /// Suspend le suivi (onglet caché, écran poussé par-dessus).
+  void pause() {
+    _paused = true;
+    _cancel();
+  }
+
+  /// Reprend le suivi ; [pollNow] : actualise tout de suite.
+  void resume({bool pollNow = true}) {
+    if (!_paused) return;
+    _paused = false;
+    if (pollNow) {
+      this.pollNow();
+    } else {
+      _schedule();
+    }
+  }
+
+  bool get isPaused => _paused;
+
+  /// Nouveau statut : adapte le rythme (ou arrête le suivi pour une commande terminée).
+  void updateStatus(String newStatus) {
+    if (newStatus == _status || _stopped) return;
+    _status = newStatus;
+    _schedule();
+  }
+
+  /// Actualise immédiatement (si le suivi est actif), puis reprogramme.
+  Future<void> pollNow() async {
+    if (_stopped || _paused || _background || _polling) return;
+    if (_intervalFor(_status) == null) return;
+    _cancel();
+    _polling = true;
+    try {
+      await onPoll();
+    } catch (_) {
+      // On réessaiera à la prochaine échéance.
+    } finally {
+      _polling = false;
+    }
+    _schedule();
+  }
+
+  void _onAppState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (!_background) return;
+      _background = false;
+      pollNow(); // retour dans l'application : données à jour tout de suite
+    } else if (!_foreground(state)) {
+      _background = true;
+      _cancel();
+    }
+  }
+
+  void _cancel() {
     _timer?.cancel();
     _timer = null;
   }
 
-  /// Update status and restart polling with new interval if status changed.
-  void updateStatus(String newStatus) {
-    if (newStatus == _lastStatus || _stopped) return;
-
-    _lastStatus = newStatus;
-    _timer?.cancel();
-
-    // Only restart polling if still needed
-    final interval = getInterval?.call(newStatus) ?? getDefaultInterval(newStatus);
-    if (interval.inMinutes < 1) {
-      _scheduleNextPoll();
-    } else {
+  void _schedule() {
+    _cancel();
+    // Pendant une requête, c'est pollNow qui reprogramme à la fin.
+    if (_stopped || _paused || _background || _polling) return;
+    final interval = _intervalFor(_status);
+    if (interval == null) return;
+    _timer = Timer(interval, () {
       _timer = null;
-    }
-  }
-
-  void _scheduleNextPoll() {
-    if (_stopped) return;
-    // Un seul minuteur à la fois (updateStatus peut en avoir programmé un pendant onPoll).
-    _timer?.cancel();
-    final interval = getInterval?.call(_lastStatus) ?? getDefaultInterval(_lastStatus);
-
-    // Commande terminée : plus de vérification (sans bloquer une reprise par updateStatus).
-    if (interval.inMinutes > 30) {
-      _timer = null;
-      return;
-    }
-
-    _timer = Timer(interval, () async {
-      try {
-        await onPoll();
-        // Reschedule next poll
-        _scheduleNextPoll();
-      } catch (e) {
-        // Continue polling on error
-        _scheduleNextPoll();
+      if (canPoll != null && !canPoll!()) {
+        _schedule(); // écran recouvert : on attend sans requête
+      } else {
+        pollNow();
       }
     });
   }
 
-  /// Get current poll interval (for diagnostics).
-  Duration getCurrentInterval() =>
-      getInterval?.call(_lastStatus) ?? getDefaultInterval(_lastStatus);
+  /// Intervalle actuel (null = pas de suivi).
+  Duration? getCurrentInterval() => _intervalFor(_status);
 
-  /// Check if polling is active.
+  /// Vrai si une prochaine actualisation est programmée.
   bool get isPolling => _timer?.isActive ?? false;
 }
 
-/// Batch request deduplicator - prevents duplicate API calls.
-/// Useful when multiple widgets request the same data simultaneously.
-class RequestDeduplicator<T> {
-  final Map<String, Future<T>> _pending = {};
-
-  /// Execute request only once if another is already pending with same key.
-  Future<T> dedupe(String key, Future<T> Function() request) {
-    if (_pending.containsKey(key)) {
-      return _pending[key]!;
-    }
-
-    final future = request().then((result) {
-      _pending.remove(key);
-      return result;
-    }, onError: (Object e, StackTrace st) {
-      _pending.remove(key);
-      return Future<T>.error(e, st);
-    });
-
-    _pending[key] = future;
-    return future;
-  }
-
-  /// Clear all pending requests.
-  void clear() => _pending.clear();
-
-  /// Check if specific request is pending.
-  bool isPending(String key) => _pending.containsKey(key);
-}
-
-/// Debouncer for API calls triggered by user input.
-/// Prevents excessive requests while user is typing/scrolling.
-class Debouncer {
-  Timer? _timer;
-  final Duration delay;
-  final Future<void> Function() onExecute;
-
-  Debouncer({required this.delay, required this.onExecute});
-
-  /// Schedule callback with debounce. Cancels previous if called again quickly.
-  void call() {
-    _timer?.cancel();
-    _timer = Timer(delay, () async {
-      try {
-        await onExecute();
-      } catch (e) {
-        // Handle error silently or report to logging service
-      }
-    });
-  }
-
-  /// Cancel pending debounced call.
-  void cancel() => _timer?.cancel();
-
-  /// Dispose and cleanup.
-  void dispose() => cancel();
-}
-
-/// Rate limiter for API calls.
-/// Prevents too many requests to same endpoint in short time.
-class RateLimiter {
-  final Duration window;
-  final int maxRequests;
-  final List<DateTime> _requestTimes = [];
-
-  RateLimiter({
-    required this.window,
-    required this.maxRequests,
-  });
-
-  /// Check if another request is allowed within rate limit.
-  bool canMakeRequest() {
-    final now = DateTime.now();
-    // Remove old request times outside the window
-    _requestTimes.removeWhere((t) => now.difference(t) > window);
-
-    if (_requestTimes.length < maxRequests) {
-      _requestTimes.add(now);
-      return true;
-    }
-    return false;
-  }
-
-  /// Reset rate limiter.
-  void reset() => _requestTimes.clear();
-
-  /// Get remaining requests in current window.
-  int getRemainingRequests() =>
-      maxRequests - _requestTimes.length;
-
-  /// Get time until next request allowed (or 0 if now).
-  Duration getTimeUntilAvailable() {
-    if (_requestTimes.isEmpty || _requestTimes.length < maxRequests) {
-      return Duration.zero;
-    }
-    final oldestRequest = _requestTimes.first;
-    final elapsed = DateTime.now().difference(oldestRequest);
-    final remaining = window - elapsed;
-    return remaining.isNegative ? Duration.zero : remaining;
-  }
+/// Vrai si l'écran de [context] est celui affiché au premier plan (rien n'est poussé par-dessus).
+bool isRouteOnTop(BuildContext context) {
+  if (!context.mounted) return false;
+  return ModalRoute.of(context)?.isCurrent ?? true;
 }

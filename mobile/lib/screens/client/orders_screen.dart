@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../models.dart';
-import '../../services/api.dart';
+import '../../services/admin_api.dart' show fetchOrdersPage, mergeFirstPage, oldestOrderId, ordersPageSize;
 import '../../services/order_events.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
@@ -23,30 +23,37 @@ class OrdersScreen extends StatefulWidget {
 }
 
 class _OrdersScreenState extends State<OrdersScreen> {
+  static const _activeStatus = 'active', _idleStatus = 'idle';
+
   List<Order>? _orders;
   Object? _error;
-  late SmartPoller _poller;
+  bool _hasMore = false;
+  bool _loadingMore = false;
+  late final SmartPoller _poller;
   // Seule la réponse de la dernière requête lancée est affichée (pas d'ancienne liste « En attente »).
   int _gen = 0;
 
   @override
   void initState() {
     super.initState();
-
-    // Rafraîchissement de fond des commandes en cours.
+    // Suivi toutes les 20 s, seulement s'il y a une commande en cours et que l'onglet est affiché.
     _poller = SmartPoller(
       onPoll: () => _load(silent: true),
-      getInterval: (_) => const Duration(seconds: 20),
+      getInterval: (s) => s == _activeStatus ? const Duration(seconds: 20) : null,
+      canPoll: () => isRouteOnTop(context),
     );
-
+    _poller.startPolling(_idleStatus);
+    if (!widget.active) _poller.pause();
     _load();
-    _poller.startPolling('pending');
     ordersChanged.addListener(_onOrdersChanged);
   }
 
   @override
   void didUpdateWidget(OrdersScreen old) {
     super.didUpdateWidget(old);
+    if (widget.active != old.active) {
+      widget.active ? _poller.resume(pollNow: false) : _poller.pause();
+    }
     if ((widget.active && !old.active) || widget.refreshToken != old.refreshToken) _load(silent: true);
   }
 
@@ -59,18 +66,42 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
   void _onOrdersChanged() => _load(silent: true);
 
-  /// Charge les commandes. [silent] = true : pas d'écran d'erreur (rafraîchissement de fond).
+  /// Charge (ou rafraîchit) la première page. [silent] = true : pas d'écran d'erreur.
   Future<void> _load({bool silent = false}) async {
     final gen = ++_gen;
     try {
-      final orders = await Api.instance.myOrders();
+      final page = await fetchOrdersPage();
       if (!mounted || gen != _gen) return;
+      final merged = mergeFirstPage(page, _orders);
       setState(() {
-        _orders = orders;
+        _orders = merged;
+        _hasMore = page.length >= ordersPageSize && (merged.length > page.length ? _hasMore : true);
         _error = null;
       });
+      _poller.updateStatus(merged.any((o) => !o.isFinished) ? _activeStatus : _idleStatus);
     } catch (e) {
       if (mounted && gen == _gen && !silent) setState(() => _error = e);
+    }
+  }
+
+  /// « Charger plus » : commandes plus anciennes.
+  Future<void> _loadMore() async {
+    final before = oldestOrderId(_orders);
+    if (_loadingMore || before == null) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await fetchOrdersPage(beforeId: before);
+      if (!mounted) return;
+      setState(() {
+        final current = _orders ?? [];
+        final oldest = oldestOrderId(current) ?? before;
+        _orders = [...current, ...page.where((o) => o.id < oldest)];
+        _hasMore = page.length >= ordersPageSize;
+      });
+    } catch (e) {
+      if (mounted) showMessage(context, e, error: true);
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
@@ -97,10 +128,13 @@ class _OrdersScreenState extends State<OrdersScreen> {
         ],
       );
     } else {
+      final count =
+          (active.isNotEmpty ? 1 : 0) + active.length + (past.isNotEmpty ? 1 : 0) + past.length + (_hasMore ? 1 : 0);
       body = ListView.builder(
         padding: const EdgeInsets.only(bottom: 24),
-        itemCount: (active.isNotEmpty ? 1 : 0) + active.length + (past.isNotEmpty ? 1 : 0) + past.length,
+        itemCount: count,
         itemBuilder: (context, index) {
+          if (_hasMore && index == count - 1) return _loadMoreButton();
           int pos = 0;
 
           // Section « En cours »
@@ -128,6 +162,19 @@ class _OrdersScreenState extends State<OrdersScreen> {
       body: RefreshIndicator(onRefresh: () => _load(silent: false), child: body),
     );
   }
+
+  Widget _loadMoreButton() => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+        child: Center(
+          child: _loadingMore
+              ? const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator())
+              : OutlinedButton.icon(
+                  onPressed: _loadMore,
+                  icon: const Icon(Icons.expand_more_rounded),
+                  label: const Text('Charger plus'),
+                ),
+        ),
+      );
 
   /// Carte animée ; la clé stable évite les saccades quand l'ordre de la liste change.
   Widget _card(Order o, int index) => FadeSlideIn(

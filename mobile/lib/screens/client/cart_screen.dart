@@ -39,13 +39,14 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   Future<void> _checkout() async {
-    // Réglages à jour (cache de 5 min) pour la prochaine estimation.
-    _loadSettings();
     final order = await Navigator.push<Order>(
       context,
       MaterialPageRoute(builder: (_) => const CheckoutScreen()),
     );
-    if (order == null || !mounted) return;
+    if (!mounted) return;
+    // La finalisation a relu les réglages à jour : l'estimation du panier en profite.
+    _loadSettings();
+    if (order == null) return;
 
     // Onglet « Commandes » (la liste se recharge), puis détail de la commande.
     ClientShell.of(context)?.goTo(ClientShellState.ordersTab);
@@ -254,7 +255,7 @@ class _Summary extends StatelessWidget {
         Text(
           "Estimation avec livraison et paiement Flooz / Mixx (frais = commission du service de paiement). "
           "En espèces, pas de frais ; à emporter, pas de livraison. Le total exact est confirmé à la commande.",
-          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11.5, height: 1.3),
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.3),
         ),
       ]);
     }

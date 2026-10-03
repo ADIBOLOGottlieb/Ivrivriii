@@ -1,9 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../services/admin_api.dart';
 import '../../utils/format.dart';
+import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
 import '../shared/order_detail_screen.dart';
 import 'admin_menu_screen.dart';
@@ -22,11 +21,12 @@ class AdminShell extends StatefulWidget {
 
 class AdminShellState extends State<AdminShell> {
   static const dashboardTab = 0, ordersTab = 1, menuTab = 2, moreTab = 3;
-  static const _paymentsPollInterval = Duration(seconds: 20);
   int _index = 0;
   int _pendingCount = 0;
 
-  Timer? _paymentsTimer;
+  // Paiements reçus : toutes les 20 s, jamais quand l'application est en arrière-plan.
+  late final SmartPoller _paymentsPoller =
+      SmartPoller(onPoll: _pollPayments, getInterval: (_) => const Duration(seconds: 20));
   bool _pollingPayments = false;
 
   /// Dernier paiement reçu connu (null tant que le premier chargement n'a pas abouti :
@@ -38,12 +38,12 @@ class AdminShellState extends State<AdminShell> {
     super.initState();
     paymentReviewCount.addListener(_onReviewCountChanged);
     _pollPayments();
-    _paymentsTimer = Timer.periodic(_paymentsPollInterval, (_) => _pollPayments());
+    _paymentsPoller.startPolling('on');
   }
 
   @override
   void dispose() {
-    _paymentsTimer?.cancel();
+    _paymentsPoller.stop();
     paymentReviewCount.removeListener(_onReviewCountChanged);
     super.dispose();
   }

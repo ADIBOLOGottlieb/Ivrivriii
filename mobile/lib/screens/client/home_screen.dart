@@ -52,24 +52,29 @@ class _HomeScreenState extends State<HomeScreen> {
     _onQueryChanged('');
   }
 
-  Future<void> _load() async {
+  /// Charge le menu. [fresh] : ignore le cache (« tirer pour rafraîchir »).
+  Future<void> _load({bool fresh = false}) async {
     setState(() {
       _loading = _products.isEmpty;
       _error = null;
     });
     try {
       final results = await Future.wait([
-        Api.instance.categories(),
-        Api.instance.products(),
-        Api.instance.settings(),
+        Api.instance.categories(fresh: fresh),
+        Api.instance.products(fresh: fresh),
+        Api.instance.settings(fresh: fresh),
       ]);
       if (!mounted) return;
+      final products = results[1] as List<Product>;
       setState(() {
         _categories = results[0] as List<Category>;
-        _products = results[1] as List<Product>;
+        _products = products;
         _settings = results[2] as AppSettings;
         _loading = false;
       });
+      // Panier revalidé avec le menu à jour (prix modifiés, plats retirés ou en rupture).
+      final message = context.read<CartProvider>().syncWithCatalog(products);
+      if (message != null && mounted) showMessage(context, message);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -98,7 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = context.watch<AuthProvider>().user;
     final cartCount = context.select<CartProvider, int>((c) => c.count);
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) return SafeArea(child: ErrorRetry(error: _error!, onRetry: _load));
+    if (_error != null) return SafeArea(child: ErrorRetry(error: _error!, onRetry: () => _load(fresh: true)));
 
     final popular = _products.where((p) => p.popular).toList();
     final filtered = _filtered;
@@ -107,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final listKey = '$_selectedCategory|$_query';
 
     return RefreshIndicator(
-      onRefresh: _load,
+      onRefresh: () => _load(fresh: true),
       child: CustomScrollView(
         slivers: [
           SliverPersistentHeader(

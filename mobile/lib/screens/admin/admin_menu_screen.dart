@@ -26,9 +26,13 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
     _load();
   }
 
-  Future<void> _load() async {
+  /// [fresh] : ignore le cache (« tirer pour rafraîchir », après une modification).
+  Future<void> _load({bool fresh = false}) async {
     try {
-      final r = await Future.wait([Api.instance.products(all: true), Api.instance.categories()]);
+      final r = await Future.wait([
+        Api.instance.products(all: true, fresh: fresh),
+        Api.instance.categories(fresh: fresh),
+      ]);
       if (!mounted) return;
       setState(() {
         _products = r[0] as List<Product>;
@@ -45,7 +49,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
       context,
       MaterialPageRoute(builder: (_) => ProductFormScreen(product: p, categories: _categories)),
     );
-    if (changed == true) _load();
+    if (changed == true) _load(fresh: true);
   }
 
   Future<void> _toggle(Product p, bool available) async {
@@ -60,66 +64,15 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
   }
 
   Future<void> _editCategory([Category? c]) async {
-    final name = TextEditingController(text: c?.name ?? '');
-    String? icon = c?.icon ?? 'chicken';
+    // Le champ de saisie appartient à la boîte de dialogue : libéré seulement à sa fermeture effective.
     final result = await showDialog<Category>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: Text(c == null ? 'Nouvelle catégorie' : 'Modifier la catégorie'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: name,
-                autofocus: true,
-                textCapitalization: TextCapitalization.sentences,
-                decoration: const InputDecoration(labelText: 'Nom'),
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  for (final e in categoryIcons.entries)
-                    ChoiceChip(
-                      label: Text(e.value, style: const TextStyle(fontSize: 20)),
-                      selected: icon == e.key,
-                      showCheckmark: false,
-                      selectedColor: AppColors.yellow,
-                      onSelected: (_) => setLocal(() => icon = e.key),
-                    ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-            FilledButton(
-              style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
-              onPressed: () {
-                if (name.text.trim().isEmpty) return;
-                Navigator.pop(
-                  ctx,
-                  Category(
-                    id: c?.id ?? 0,
-                    name: name.text.trim(),
-                    icon: icon,
-                    position: c?.position ?? _categories.length,
-                  ),
-                );
-              },
-              child: const Text('Enregistrer'),
-            ),
-          ],
-        ),
-      ),
+      builder: (_) => _CategoryDialog(category: c, position: c?.position ?? _categories.length),
     );
-    name.dispose();
     if (result == null) return;
     try {
       await Api.instance.saveCategory(result);
-      await _load();
+      await _load(fresh: true);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
     }
@@ -139,7 +92,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
     if (!ok) return;
     try {
       await Api.instance.deleteCategory(c.id);
-      await _load();
+      await _load(fresh: true);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
     }
@@ -171,7 +124,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
           ),
           body: _products == null
               ? (_error != null
-                  ? ErrorRetry(error: _error!, onRetry: _load)
+                  ? ErrorRetry(error: _error!, onRetry: () => _load(fresh: true))
                   : const Center(child: CircularProgressIndicator()))
               : TabBarView(children: [_productsTab(), _categoriesTab()]),
         );
@@ -191,7 +144,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
     ].where((s) => s.$2.isNotEmpty).toList();
 
     return RefreshIndicator(
-      onRefresh: _load,
+      onRefresh: () => _load(fresh: true),
       child: products.isEmpty
           ? ListView(children: const [
               SizedBox(height: 80),
@@ -238,8 +191,10 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
                                       const SizedBox(height: 2),
                                       Text(formatPrice(p.price), style: const TextStyle(color: AppColors.red)),
                                       if (!p.available)
-                                        const Text('Rupture de stock',
-                                            style: TextStyle(color: AppColors.muted, fontSize: 12)),
+                                        Text('Rupture de stock',
+                                            style: TextStyle(
+                                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                                fontSize: 12)),
                                     ],
                                   ),
                                 ),
@@ -263,7 +218,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
 
   Widget _categoriesTab() {
     return RefreshIndicator(
-      onRefresh: _load,
+      onRefresh: () => _load(fresh: true),
       child: ListView.separated(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
         itemCount: _categories.length,
@@ -285,6 +240,76 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+/// Création / modification d'une catégorie (nom + icône).
+class _CategoryDialog extends StatefulWidget {
+  final Category? category;
+  final int position;
+  const _CategoryDialog({this.category, required this.position});
+
+  @override
+  State<_CategoryDialog> createState() => _CategoryDialogState();
+}
+
+class _CategoryDialogState extends State<_CategoryDialog> {
+  late final TextEditingController _name = TextEditingController(text: widget.category?.name ?? '');
+  late String? _icon = widget.category?.icon ?? 'chicken';
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.category;
+    return AlertDialog(
+      title: Text(c == null ? 'Nouvelle catégorie' : 'Modifier la catégorie'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _name,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(labelText: 'Nom'),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final e in categoryIcons.entries)
+                ChoiceChip(
+                  label: Text(e.value, style: const TextStyle(fontSize: 20)),
+                  selected: _icon == e.key,
+                  showCheckmark: false,
+                  selectedColor: AppColors.yellow,
+                  onSelected: (_) => setState(() => _icon = e.key),
+                ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Annuler')),
+        FilledButton(
+          style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+          onPressed: () {
+            final name = _name.text.trim();
+            if (name.isEmpty) return;
+            Navigator.pop(
+              context,
+              Category(id: c?.id ?? 0, name: name, icon: _icon, position: widget.position),
+            );
+          },
+          child: const Text('Enregistrer'),
+        ),
+      ],
     );
   }
 }

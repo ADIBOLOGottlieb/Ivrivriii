@@ -64,7 +64,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('Administration', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                Text(user?.name ?? '', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+                Text(user?.name ?? '',
+                    style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
               ],
             ),
           ],
@@ -174,7 +175,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         format: formatPrice,
                         style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
                       ),
-                      subtitle: Text('Total encaissé • ${s.deliveredOrders} commandes livrées'),
+                      subtitle: Text('Total des commandes livrées (${s.deliveredOrders}), hors remboursements'),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -186,9 +187,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 10),
                   Card(
                     child: s.topProducts.isEmpty
-                        ? const Padding(
-                            padding: EdgeInsets.all(20),
-                            child: Text('Pas encore de ventes', style: TextStyle(color: AppColors.muted)),
+                        ? Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Text('Pas encore de ventes',
+                                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                           )
                         : Column(
                             children: [
@@ -256,7 +258,7 @@ class _StatCard extends StatelessWidget {
               ),
             ),
             Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12)),
           ],
         ),
       ),
@@ -299,7 +301,11 @@ class _WeekChart extends StatelessWidget {
                       children: [
                         Text(
                           e.stat == null ? '' : '${e.stat!.orders}',
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.muted),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                         const SizedBox(height: 4),
                         TweenAnimationBuilder<double>(

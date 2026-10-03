@@ -1,8 +1,7 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../models.dart';
+import '../../services/admin_api.dart' show fetchOrdersPage, mergeFirstPage, oldestOrderId, ordersPageSize;
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
@@ -30,112 +29,138 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
     'all': 'Toutes',
   };
 
+  /// Commandes en cours chargées d'un coup (une seule requête par cycle : liste, badge et alerte).
+  static const _activeLimit = 200;
+
   String _filter = 'active';
   List<Order>? _orders;
   Object? _error;
-  late SmartPoller _poller;
-  late RequestDeduplicator<List<Order>> _deduplicator;
+  bool _hasMore = false;
+  bool _loadingMore = false;
+  int _gen = 0; // seule la dernière requête lancée est affichée
   int? _lastMaxId;
   final Set<int> _updating = {};
-  final ScrollController _scrollController = ScrollController();
+  late final SmartPoller _poller;
 
   @override
   void initState() {
     super.initState();
-
-    // Initialize request deduplicator to prevent duplicate API calls
-    _deduplicator = RequestDeduplicator();
-
-    // Initialize smart poller for new order notifications
+    // Toutes les 20 s, seulement quand l'onglet est affiché, sans écran par-dessus, app au premier plan.
     _poller = SmartPoller(
       onPoll: () => _load(silent: true),
-      getInterval: (_) => const Duration(seconds: 20), // Check every 20s for new orders
+      getInterval: (_) => const Duration(seconds: 20),
+      canPoll: () => isRouteOnTop(context),
     );
-
-    _load();
-    _poller.startPolling('pending');
-    _scrollController.addListener(_handleScroll);
+    _poller.startPolling('on');
+    if (!widget.active) _poller.pause();
+    _load(); // premier chargement : badge « en attente »
   }
 
   @override
   void didUpdateWidget(AdminOrdersScreen old) {
     super.didUpdateWidget(old);
-    if (widget.active && !old.active) _load();
+    if (widget.active == old.active) return;
+    if (widget.active) {
+      _poller.resume(pollNow: false);
+      _load();
+    } else {
+      _poller.pause();
+    }
   }
 
   @override
   void dispose() {
     _poller.stop();
-    _scrollController.removeListener(_handleScroll);
-    _scrollController.dispose();
-    _deduplicator.clear();
     super.dispose();
   }
 
-  /// Handle scroll events for potential pagination (future enhancement).
-  void _handleScroll() {
-    if (_scrollController.position.pixels > _scrollController.position.maxScrollExtent - 500) {
-      // Could implement pagination here if orders list grows large
-      // For now, just track scroll position
-    }
-  }
+  /// Les filtres « En cours » et « En attente » sont servis par la même requête (commandes en cours).
+  bool get _fromActive => _filter == 'active' || _filter == 'pending';
 
-  /// Batch fetch: gets filtered orders + pending count in single API roundtrip.
-  /// Uses request deduplication to prevent duplicate calls during rapid filter changes.
+  String? get _apiStatus => _filter == 'all' ? null : _filter;
+
+  /// Une seule requête : commandes en cours (filtres En cours / En attente, badge, alerte
+  /// nouvelle commande) ou, pour l'historique, la première page du filtre choisi.
+  /// Le rafraîchissement automatique ([silent]) ne recharge que les commandes en cours.
   Future<void> _load({bool silent = false}) async {
     final filter = _filter;
-    final cacheKey = 'orders_$filter';
-
+    // Le suivi automatique sur un filtre d'historique ne touche pas à la liste affichée.
+    final gen = (_fromActive || !silent) ? ++_gen : _gen;
     try {
-      // Deduplicate requests - if load already pending for this filter, reuse that Future
-      final results = await _deduplicator.dedupe(cacheKey, () async {
-        // Batch API calls: get filtered orders + pending count together
-        return Future.wait([
-          Api.instance.adminOrders(status: filter == 'all' ? null : filter),
-          Api.instance.adminOrders(status: 'pending'),
-        ]).then((results) {
-          // Return only the filtered results from [0], pending was for count
-          return results[0];
-        });
-      });
-
-      // Ignore if filter changed while request was in-flight
-      if (!mounted || filter != _filter) return;
-
-      // Fetch pending count again for badge update (lightweight call)
-      try {
-        final pending = await Api.instance.adminOrders(status: 'pending');
-        final maxId = pending.isEmpty ? null : pending.map((o) => o.id).reduce((a, b) => a > b ? a : b);
-
-        // Notify user of new pending orders (only in silent mode, don't interrupt)
-        if (silent && maxId != null && _lastMaxId != null && maxId > _lastMaxId!) {
-          if (mounted) showMessage(context, '🔔 Nouvelle commande reçue !');
-        }
-        if (maxId != null && (_lastMaxId == null || maxId > _lastMaxId!)) _lastMaxId = maxId;
-
-        // L'écran a pu être fermé pendant la requête.
-        if (mounted) AdminShell.of(context)?.setPendingCount(pending.length);
-      } catch (_) {
-        // Silently fail on pending count update - not critical
-      }
-
-      if (mounted) {
+      if (_fromActive || silent) {
+        final active = await fetchOrdersPage(admin: true, status: 'active', limit: _activeLimit);
+        if (!mounted) return;
+        _onActiveOrders(active, silent: silent);
+        if (gen != _gen || filter != _filter || !_fromActive) return;
         setState(() {
-          _orders = results;
+          _orders = filter == 'pending' ? active.where((o) => o.status == 'pending').toList() : active;
+          _hasMore = false;
+          _error = null;
+        });
+      } else {
+        final page = await fetchOrdersPage(admin: true, status: _apiStatus);
+        if (!mounted || gen != _gen || filter != _filter) return;
+        final merged = mergeFirstPage(page, _orders);
+        setState(() {
+          _orders = merged;
+          _hasMore = page.length >= ordersPageSize && (merged.length > page.length ? _hasMore : true);
           _error = null;
         });
       }
     } catch (e) {
-      if (mounted && !silent) setState(() => _error = e);
+      if (mounted && gen == _gen && !silent) setState(() => _error = e);
     }
   }
 
-  /// Advance order status with optimistic UI update.
+  /// Badge « en attente » et alerte quand une nouvelle commande arrive.
+  void _onActiveOrders(List<Order> active, {required bool silent}) {
+    final pending = active.where((o) => o.status == 'pending').toList();
+    final maxId = pending.isEmpty ? null : pending.map((o) => o.id).reduce((a, b) => a > b ? a : b);
+    if (silent && maxId != null && _lastMaxId != null && maxId > _lastMaxId!) {
+      showMessage(context, '🔔 Nouvelle commande reçue !');
+    }
+    if (maxId != null && (_lastMaxId == null || maxId > _lastMaxId!)) _lastMaxId = maxId;
+    AdminShell.of(context)?.setPendingCount(pending.length);
+  }
+
+  /// « Charger plus » (historique) : commandes plus anciennes.
+  Future<void> _loadMore() async {
+    final before = oldestOrderId(_orders);
+    if (_loadingMore || before == null || _fromActive) return;
+    final filter = _filter;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await fetchOrdersPage(admin: true, status: _apiStatus, beforeId: before);
+      if (!mounted || filter != _filter) return;
+      setState(() {
+        final current = _orders ?? [];
+        final oldest = oldestOrderId(current) ?? before;
+        _orders = [...current, ...page.where((o) => o.id < oldest)];
+        _hasMore = page.length >= ordersPageSize;
+      });
+    } catch (e) {
+      if (mounted) showMessage(context, e, error: true);
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  void _selectFilter(String f) {
+    if (f == _filter) return;
+    setState(() {
+      _filter = f;
+      _orders = null;
+      _hasMore = false;
+      _error = null;
+    });
+    _load();
+  }
+
   Future<void> _advance(Order o, String status) async {
     setState(() => _updating.add(o.id));
     try {
       await Api.instance.setOrderStatus(o.id, status);
-      await _load(); // Refresh list after status change
+      await _load();
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
     } finally {
@@ -146,10 +171,11 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final orders = _orders;
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Commandes'),
-        actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh_rounded))],
+        actions: [IconButton(tooltip: 'Actualiser', onPressed: _load, icon: const Icon(Icons.refresh_rounded))],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(52),
           child: SizedBox(
@@ -166,18 +192,12 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                       selected: _filter == f.key,
                       showCheckmark: false,
                       selectedColor: AppColors.red,
-                      backgroundColor: Theme.of(context).colorScheme.surface,
+                      backgroundColor: scheme.surface,
                       labelStyle: TextStyle(
-                        color: _filter == f.key ? Colors.white : Theme.of(context).colorScheme.onSurface,
+                        color: _filter == f.key ? Colors.white : scheme.onSurface,
                         fontWeight: FontWeight.w700,
                       ),
-                      onSelected: (_) {
-                        setState(() {
-                          _filter = f.key;
-                          _orders = null;
-                        });
-                        _load();
-                      },
+                      onSelected: (_) => _selectFilter(f.key),
                     ),
                   ),
               ],
@@ -196,20 +216,18 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                     SizedBox(height: 80),
                     EmptyState(emoji: '✅', title: 'Aucune commande ici'),
                   ])
-                // Use ListView.builder for better memory efficiency with large lists
                 : ListView.separated(
-                    controller: _scrollController, // For scroll-to-load pagination
                     padding: const EdgeInsets.all(20),
-                    itemCount: orders.length,
+                    itemCount: orders.length + (_hasMore ? 1 : 0),
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
                     itemBuilder: (_, i) {
+                      if (i == orders.length) return _loadMoreButton();
                       final o = orders[i];
                       // En livraison : « Livrée » seulement après « Livraison faite » du livreur
                       // (sinon l'admin force depuis le détail de la commande).
                       final next = o.status == 'cancelled'
                           ? null
                           : adminNextStatus(o.status, o.isDelivery, driverDelivered: o.driverDeliveredAt != null);
-                      // Use ValueKey for list item tracking (prevents rebuild jank)
                       return FadeSlideIn(
                         key: ValueKey('$_filter-${o.id}'),
                         delay: FadeSlideIn.stagger(i),
@@ -223,7 +241,7 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                                 builder: (_) => OrderDetailScreen(orderId: o.id, initial: o, admin: true),
                               ),
                             );
-                            _load();
+                            if (mounted) _load();
                           },
                           trailingAction: next == null
                               ? null
@@ -240,4 +258,14 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
       ),
     );
   }
+
+  Widget _loadMoreButton() => Center(
+        child: _loadingMore
+            ? const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator())
+            : OutlinedButton.icon(
+                onPressed: _loadMore,
+                icon: const Icon(Icons.expand_more_rounded),
+                label: const Text('Charger plus'),
+              ),
+      );
 }

@@ -31,6 +31,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   String _mode = 'delivery';
   String _payment = 'cash';
   AppSettings? _settings;
+  bool _settingsFailed = false; // 3 essais sans succès : bouton « Réessayer »
   bool _submitting = false;
   LocationData? _location;
   // Dernière adresse remplie automatiquement (profil, GPS, « Mes adresses »).
@@ -43,30 +44,27 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     _prefilledAddress = user?.address;
     _address = TextEditingController(text: user?.address ?? '');
     _phone = TextEditingController(text: user?.phone ?? '');
-    // FIX: Add proper error handling for settings API call
     _loadSettings();
     // Position partagée depuis Google Maps (avant ou pendant l'ouverture de cet écran).
     SharedLocationService.instance.pending.addListener(_onSharedLocation);
     WidgetsBinding.instance.addPostFrameCallback((_) => _onSharedLocation());
   }
 
+  /// Réglages à jour (ouverture, minimum, frais) : 3 essais espacés, puis bouton « Réessayer ».
   Future<void> _loadSettings() async {
-    try {
-      final s = await Api.instance.settings();
-      if (mounted) {
-        setState(() => _settings = s);
-      }
-    } catch (e) {
-      // FIX: Show error to user instead of silently failing
-      if (mounted) {
-        showMessage(context, 'Impossible de charger les paramètres du restaurant. Certaines restrictions pourraient ne pas être appliquées.', error: true);
-      }
-      // Retry after 3 seconds
-      await Future.delayed(const Duration(seconds: 3));
-      if (mounted) {
-        _loadSettings(); // Retry
+    if (_settingsFailed) setState(() => _settingsFailed = false);
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final s = await Api.instance.settings(fresh: true);
+        if (mounted) setState(() => _settings = s);
+        return;
+      } catch (_) {
+        if (!mounted) return;
+        if (attempt < 3) await Future.delayed(Duration(seconds: 2 * attempt));
+        if (!mounted) return;
       }
     }
+    setState(() => _settingsFailed = true);
   }
 
   @override
@@ -180,10 +178,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         'payment_method': _payment,
         'location': _mode == 'delivery' ? _location?.toJson() : null,
       });
-      cart.clear();
       notifyOrdersChanged();
+      // Panier vidé seulement après la boîte de confirmation (sinon récapitulatif vide derrière).
+      if (!mounted) {
+        cart.clear();
+        return;
+      }
       // Retient l'adresse pour la prochaine fois.
-      if (!mounted) return;
       final auth = context.read<AuthProvider>();
       if (_mode == 'delivery' && (auth.user?.address ?? '').isEmpty) {
         auth.updateProfile({'address': _address.text.trim()}).catchError((_) {});
@@ -214,6 +215,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ],
         ),
       );
+      cart.clear();
       if (mounted) Navigator.pop(context, order);
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
@@ -234,6 +236,20 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            if (_settingsFailed) ...[
+              Card(
+                color: Theme.of(context).colorScheme.errorContainer,
+                child: ListTile(
+                  leading: Icon(Icons.cloud_off_rounded, color: Theme.of(context).colorScheme.onErrorContainer),
+                  title: Text(
+                    'Impossible de charger les informations du restaurant (horaires, frais).',
+                    style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+                  ),
+                  trailing: TextButton(onPressed: _loadSettings, child: const Text('Réessayer')),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
             const _Label('Mode de retrait'),
             SegmentedButton<String>(
               segments: const [
@@ -314,7 +330,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                                   ].join('\n')
                                 : 'Aucune position choisie : le livreur en a besoin pour vous trouver.',
                             style: TextStyle(
-                              color: _location != null ? AppColors.green : AppColors.muted,
+                              color: _location != null ? AppColors.green : Theme.of(context).colorScheme.onSurfaceVariant,
                               fontSize: _location != null ? 13 : 14,
                               fontWeight: _location != null ? FontWeight.w600 : FontWeight.w400,
                             ),
@@ -421,7 +437,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         child: SafeArea(
           top: false,
           child: FilledButton(
-            onPressed: _submitting || cart.isEmpty || (_mode == 'delivery' && _location == null) ? null : _submit,
+            // Sans les réglages, les frais affichés seraient faux : on attend leur chargement.
+            onPressed: _submitting || _settings == null || cart.isEmpty || (_mode == 'delivery' && _location == null)
+                ? null
+                : _submit,
             child: _submitting
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
                 : Text('Commander • ${formatPrice(cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0))}'),

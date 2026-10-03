@@ -44,9 +44,9 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Object? _error;
   bool _busy = false;
   int _gen = 0; // incrémenté à chaque action : invalide les lectures en cours
-  late SmartPoller _poller;
-  // Le client revient du navigateur après avoir payé : on rafraîchit aussitôt.
-  late final AppLifecycleListener _lifecycle;
+  // Suivi adapté au statut ; suspendu en arrière-plan et sous un autre écran. Au retour dans
+  // l'application (ex. après le paiement dans le navigateur), actualisation immédiate.
+  late final SmartPoller _poller;
   // Position du restaurant (départ de l'itinéraire), si l'admin l'a renseignée.
   LatLng? _restaurant;
   String? _restaurantAddress;
@@ -57,39 +57,22 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     _order = widget.initial;
     _loadRestaurant();
 
-    // Initialize smart poller with adaptive polling intervals based on order status.
-    // Priorities: pending/confirmed (10s) > preparing/ready/delivering (5s) > finished (stop)
     _poller = SmartPoller(
       onPoll: _load,
-      getInterval: (status) {
-        // Urgent: order in transit or being prepared
-        if (['preparing', 'ready', 'delivering'].contains(status)) {
-          return const Duration(seconds: 5); // High priority - poll frequently
-        }
-        // Active: order just placed or confirmed
-        if (['pending', 'confirmed'].contains(status)) {
-          return const Duration(seconds: 10); // Normal priority
-        }
-        // Stable: order finished - stop polling entirely
-        return const Duration(hours: 1); // Effectively disabled
-      },
+      // En préparation / en livraison : 5 s ; en attente / confirmée : 10 s ; terminée : plus de suivi.
+      getInterval: SmartPoller.getDefaultInterval,
+      canPoll: () => isRouteOnTop(context),
     );
-
-    _lifecycle = AppLifecycleListener(onResume: _load);
+    _poller.startPolling(_order?.status ?? 'pending');
     _load();
     if (widget.openPayment && !widget.admin) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _pay());
-    }
-    // Start polling only if order not finished
-    if (_order == null || !_order!.isFinished) {
-      _poller.startPolling(_order?.status ?? 'pending');
     }
   }
 
   @override
   void dispose() {
-    _poller.stop(); // Clean up smart poller
-    _lifecycle.dispose();
+    _poller.stop();
     super.dispose();
   }
 
@@ -161,11 +144,14 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       await _payInBrowser();
       return;
     }
+    // L'écran de paiement suit lui-même la tentative : pas de suivi en double dessous.
+    _poller.pause();
     final updated = await Navigator.push<Order>(
       context,
       MaterialPageRoute(builder: (_) => PaymentScreen(order: _order ?? o)),
     );
     if (!mounted) return;
+    _poller.resume(pollNow: false);
     if (updated != null) {
       _gen++;
       _setOrder(updated);
@@ -268,40 +254,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
   /// Admin : remboursement d'une commande payée puis annulée.
   Future<void> _refund() async {
-    final ctrl = TextEditingController();
+    // Le champ appartient à la boîte de dialogue : libéré seulement à sa fermeture effective.
     final reference = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rembourser le client ?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Montant payé : ${formatPrice(_order?.total ?? 0)}.'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Référence du remboursement',
-                helperText: 'Obligatoire si vous avez remboursé à la main (transfert Flooz / Mixx).',
-                helperMaxLines: 3,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          FilledButton(
-            style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('Rembourser'),
-          ),
-        ],
-      ),
+      builder: (_) => _RefundDialog(total: _order?.total ?? 0),
     );
-    // Libéré après la fermeture complète de la boîte de dialogue.
-    WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.dispose());
     if (reference == null || !mounted) return;
     setState(() => _busy = true);
     try {
@@ -684,7 +641,7 @@ class _Timeline extends StatelessWidget {
                           fontFamily: 'Poppins',
                           fontSize: 14,
                           fontWeight: i == current ? FontWeight.w800 : FontWeight.w500,
-                          color: i <= current ? Theme.of(context).colorScheme.onSurface : AppColors.muted,
+                          color: i <= current ? scheme.onSurface : scheme.onSurfaceVariant,
                         ),
                         child: Text(_label(steps[i])),
                       ),
@@ -779,9 +736,9 @@ class _ItemsCard extends StatelessWidget {
                 ),
               ),
             const Divider(height: 20),
-            _row('Sous-total', order.subtotal),
-            if (order.isDelivery) _row('Livraison', order.deliveryFee),
-            if (order.paymentFee > 0) _row('Frais de paiement', order.paymentFee),
+            _row(context, 'Sous-total', order.subtotal),
+            if (order.isDelivery) _row(context, 'Livraison', order.deliveryFee),
+            if (order.paymentFee > 0) _row(context, 'Frais de paiement', order.paymentFee),
             const SizedBox(height: 4),
             Row(
               children: [
@@ -796,10 +753,10 @@ class _ItemsCard extends StatelessWidget {
     );
   }
 
-  Widget _row(String label, int amount) => Padding(
+  Widget _row(BuildContext context, String label, int amount) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(children: [
-          Text(label, style: const TextStyle(color: AppColors.muted)),
+          Text(label, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
           const Spacer(),
           Text(formatPrice(amount)),
         ]),
@@ -1235,6 +1192,57 @@ class _DriverPickerState extends State<_DriverPicker> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Admin : saisie de la référence d'un remboursement.
+class _RefundDialog extends StatefulWidget {
+  final int total;
+  const _RefundDialog({required this.total});
+
+  @override
+  State<_RefundDialog> createState() => _RefundDialogState();
+}
+
+class _RefundDialogState extends State<_RefundDialog> {
+  final _ctrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Rembourser le client ?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Montant payé : ${formatPrice(widget.total)}.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Référence du remboursement',
+              helperText: 'Obligatoire si vous avez remboursé à la main (transfert Flooz / Mixx).',
+              helperMaxLines: 3,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Annuler')),
+        FilledButton(
+          style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+          onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
+          child: const Text('Rembourser'),
+        ),
+      ],
     );
   }
 }
