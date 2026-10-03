@@ -9,6 +9,7 @@ class AppColors {
   static const yellow = Color(0xFFFFB800);
   static const cream = Color(0xFFFFF8EC);
   static const ink = Color(0xFF2B1B17);
+  /// Gris du thème clair uniquement : dans les widgets, préférer [mutedColor] (lisible en sombre).
   static const muted = Color(0xFF7A6A64);
   static const green = Color(0xFF2E9E5B);
 
@@ -58,6 +59,9 @@ class AppColors {
   static const darkOnSurfaceVariant = Color(0xFFC8B5AA);
   static const darkOutline = Color(0xFF908073);
 }
+
+/// Texte secondaire (gris) adapté au thème courant, clair ou sombre.
+Color mutedColor(BuildContext context) => Theme.of(context).colorScheme.onSurfaceVariant;
 
 /// Build Material 3 theme with light mode
 ThemeData buildLightTheme() {

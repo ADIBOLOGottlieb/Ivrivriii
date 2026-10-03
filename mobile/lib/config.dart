@@ -1,11 +1,12 @@
 /// Adresse de l'API.
 ///
-/// Par défaut `10.0.2.2` pointe vers le PC depuis l'émulateur Android.
-/// Sur un vrai téléphone, lancez avec l'IP du PC sur le réseau Wi-Fi :
-///   flutter run --dart-define=API_URL=http://192.168.1.20:4000
+/// Par défaut : le serveur de production (HTTPS).
+/// Le dev local passe par --dart-define=API_URL=http://10.0.2.2:4000 (émulateur Android ;
+/// sur un vrai téléphone, l'IP du PC sur le Wi-Fi, ex. http://192.168.1.20:4000).
+/// Le HTTP en clair n'est autorisé que dans les builds debug/profile.
 const String apiBaseUrl = String.fromEnvironment(
   'API_URL',
-  defaultValue: 'http://10.0.2.2:4000',
+  defaultValue: 'https://ivrivrii-api.onrender.com',
 );
 
 /// Transforme un chemin relatif (`/uploads/...`) renvoyé par l'API en URL complète.

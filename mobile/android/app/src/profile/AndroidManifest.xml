@@ -4,4 +4,7 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Dev local uniquement : HTTP en clair vers le PC (--dart-define=API_URL=http://10.0.2.2:4000).
+         Fusionné avec le manifeste principal ; le build release reste en HTTPS seul. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>

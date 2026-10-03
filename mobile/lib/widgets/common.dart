@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import '../config.dart';
 import '../services/api.dart';
@@ -68,30 +67,12 @@ class ProductImage extends StatelessWidget {
               width: width,
               height: height,
               fit: BoxFit.cover,
-              // Cache for 7 days by default
-              cacheManager: CacheManager.instance,
               placeholder: (context, url) => shimmer,
               errorWidget: (context, url, error) => placeholder,
               fadeInDuration: const Duration(milliseconds: 300),
               fadeOutDuration: const Duration(milliseconds: 300),
             ),
     );
-  }
-}
-
-/// Global cache manager instance for network images.
-/// Configured with 7-day default TTL and maximum 100MB cache size.
-class CacheManager {
-  static final instance = _createCacheManager();
-
-  static dynamic _createCacheManager() {
-    try {
-      // Use default flutter_cache_manager with custom duration
-      return DefaultCacheManager();
-    } catch (_) {
-      // Fallback if cache manager initialization fails
-      return null;
-    }
   }
 }
 
