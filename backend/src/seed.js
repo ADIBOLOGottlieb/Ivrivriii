@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { db, transaction } = require('./db');
+const { normalizePhone } = require('./auth');
 
 const CATEGORIES = [
   { name: 'Poulets', icon: 'chicken' },
@@ -30,21 +31,40 @@ const PRODUCTS = [
   [5, 'Salade de fruits', 'Fruits frais de saison', 1500, 0, 'https://images.unsplash.com/photo-1564093497595-593b96d80180?w=800'],
 ];
 
+/**
+ * Crée le compte admin (ADMIN_PHONE / ADMIN_PASSWORD). En production, sans ADMIN_PASSWORD, le mot de
+ * passe par défaut est refusé : aucun admin n'est créé (le serveur démarre quand même).
+ * @returns true si le compte a été créé.
+ */
+function createDefaultAdmin() {
+  const password = process.env.ADMIN_PASSWORD || '';
+  if (!password && process.env.NODE_ENV === 'production') {
+    console.error(
+      '❌ ADMIN_PASSWORD non défini en production : compte administrateur NON créé. ' +
+        'Définissez ADMIN_PHONE et ADMIN_PASSWORD puis redémarrez le serveur.',
+    );
+    return false;
+  }
+  const phone = normalizePhone(process.env.ADMIN_PHONE || '0700000000') || '0700000000';
+  if (db.prepare('SELECT id FROM users WHERE phone = ?').get(phone)) {
+    console.error(`❌ ADMIN_PHONE ${phone} appartient déjà à un compte non administrateur : admin NON créé.`);
+    return false;
+  }
+  db.prepare(`INSERT INTO users (name, phone, password_hash, role) VALUES (?, ?, ?, 'admin')`).run(
+    'Administrateur', phone, bcrypt.hashSync(password || 'admin123', 10),
+  );
+  // Un mot de passe fourni par l'environnement n'est jamais écrit dans les journaux.
+  console.log(
+    password
+      ? `👤 Compte admin créé : ${phone}`
+      : `👤 Compte admin créé : ${phone} / admin123 (développement : changez le mot de passe !)`,
+  );
+  return true;
+}
+
 function seedIfEmpty() {
   const hasAdmin = db.prepare(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`).get();
-  if (!hasAdmin) {
-    const phone = process.env.ADMIN_PHONE || '0700000000';
-    const password = process.env.ADMIN_PASSWORD || 'admin123';
-    db.prepare(`INSERT INTO users (name, phone, password_hash, role) VALUES (?, ?, ?, 'admin')`).run(
-      'Administrateur', phone, bcrypt.hashSync(password, 10),
-    );
-    // Un mot de passe fourni par l'environnement n'est jamais écrit dans les journaux.
-    console.log(
-      process.env.ADMIN_PASSWORD
-        ? `👤 Compte admin créé : ${phone}`
-        : `👤 Compte admin créé : ${phone} / ${password} (changez le mot de passe !)`,
-    );
-  }
+  if (!hasAdmin) createDefaultAdmin();
 
   const hasCategories = db.prepare('SELECT id FROM categories LIMIT 1').get();
   if (!hasCategories) {
@@ -64,4 +84,4 @@ function seedIfEmpty() {
 
 if (require.main === module) seedIfEmpty();
 
-module.exports = { seedIfEmpty };
+module.exports = { seedIfEmpty, createDefaultAdmin };
