@@ -157,6 +157,8 @@ class DriverShellState extends State<DriverShell> {
         children: [
           const DriverTrackingBanner(),
           NavigationBar(
+            height: 68,
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
             selectedIndex: _index,
             onDestinationSelected: goTo,
             destinations: [
@@ -168,7 +170,7 @@ class DriverShellState extends State<DriverShell> {
               NavigationDestination(
                 icon: _badgeIcon(Icons.two_wheeler_outlined, _mineCount),
                 selectedIcon: _badgeIcon(Icons.two_wheeler_rounded, _mineCount),
-                label: 'Mes livraisons',
+                label: 'En cours',
               ),
               const NavigationDestination(icon: Icon(Icons.history_rounded), label: 'Historique'),
               const NavigationDestination(

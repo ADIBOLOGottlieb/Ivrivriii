@@ -149,9 +149,9 @@ class AdminShellState extends State<AdminShell> {
   /// Icône, icône sélectionnée et libellé d'un onglet.
   (Widget, Widget, String) _destination(int tab, int reviewCount) => switch (tab) {
         dashboardTab => (
-            const Icon(Icons.dashboard_outlined),
-            const Icon(Icons.dashboard_rounded),
-            'Tableau de bord',
+            const Icon(Icons.home_outlined),
+            const Icon(Icons.home_rounded),
+            'Accueil',
           ),
         ordersTab => (
             _badge(_pendingCount, Icons.receipt_long_outlined),
@@ -240,7 +240,10 @@ class AdminShellState extends State<AdminShell> {
 
     return Scaffold(
       body: body,
+      // Libellés courts sur une seule ligne : toutes les icônes restent alignées.
       bottomNavigationBar: NavigationBar(
+        height: 68,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         selectedIndex: selected,
         onDestinationSelected: (i) => goTo(tabs[i]),
         destinations: [
