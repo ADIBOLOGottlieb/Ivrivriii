@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../widgets/app_nav_bar.dart';
 import '../../providers/cart_provider.dart';
 import '../../widgets/animations.dart';
 import 'cart_screen.dart';
@@ -49,16 +50,16 @@ class ClientShellState extends State<ClientShell> {
           const ProfileScreen(),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
+      bottomNavigationBar: AppNavBar(
         selectedIndex: _index,
-        onDestinationSelected: goTo,
-        destinations: [
-          const NavigationDestination(
+        onSelected: goTo,
+        items: [
+          const AppNavItem(
             icon: Icon(Icons.restaurant_menu_outlined),
             selectedIcon: Icon(Icons.restaurant_menu_rounded),
             label: 'Menu',
           ),
-          NavigationDestination(
+          AppNavItem(
             icon: Badge(
               isLabelVisible: cartCount > 0,
               label: Text('$cartCount'),
@@ -71,12 +72,12 @@ class ClientShellState extends State<ClientShell> {
             ),
             label: 'Panier',
           ),
-          const NavigationDestination(
+          const AppNavItem(
             icon: Icon(Icons.receipt_long_outlined),
             selectedIcon: Icon(Icons.receipt_long_rounded),
             label: 'Commandes',
           ),
-          const NavigationDestination(
+          const AppNavItem(
             icon: Icon(Icons.person_outline_rounded),
             selectedIcon: Icon(Icons.person_rounded),
             label: 'Profil',

@@ -140,8 +140,8 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
   });
 
   let kitchen;
-  await t.test('personnel : création, rôles, dernier gérant', async () => {
-    assert.equal(admin.user.admin_level, 'manager', 'compte créé par seed.js = gérant');
+  await t.test('personnel : création, rôles, propriétaire', async () => {
+    assert.equal(admin.user.admin_level, 'owner', 'compte créé par seed.js = propriétaire');
     let r = await admin.call('POST', '/api/admin/staff', { name: 'Cuisine', phone: '91 44 44 44', password: 'cuisine1', admin_level: 'kitchen' });
     assert.equal(r.status, 201, JSON.stringify(r.data));
     assert.deepEqual(Object.keys(r.data).sort(), ['active', 'admin_level', 'created_at', 'id', 'name', 'phone']);
@@ -174,22 +174,48 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
     const av = await kitchen.call('PATCH', `/api/admin/products/${big.id}/availability`, { available: true });
     assert.equal(av.status, 200);
 
-    // Dernier gérant actif : ni rétrogradé ni désactivé.
-    r = await admin.call('PATCH', `/api/admin/staff/${admin.user.id}`, { admin_level: 'kitchen' });
-    assert.equal(r.status, 400);
-    assert.equal(r.data.error, 'Il faut au moins un gérant actif');
-    assert.equal((await admin.call('PATCH', `/api/admin/staff/${admin.user.id}`, { active: false })).status, 400);
-    // Un second gérant, désactivé : ne compte pas.
-    const m2 = (await admin.call('POST', '/api/admin/staff', { name: 'Gérant 2', phone: '91777777', password: 'gerant1', admin_level: 'manager' })).data;
-    assert.equal((await admin.call('PATCH', `/api/admin/staff/${m2.id}`, { active: false })).data.active, false);
+    // Propriétaire : ni rétrogradé, ni désactivé, ni supprimé (même par lui-même) ; niveau 'owner' non attribuable.
     assert.equal((await admin.call('PATCH', `/api/admin/staff/${admin.user.id}`, { admin_level: 'kitchen' })).status, 400);
-    // Ancien admin sans niveau (NULL) = gérant.
-    sql.prepare('UPDATE users SET admin_level = NULL WHERE id = ?').run(admin.user.id);
-    assert.equal((await admin.call('GET', '/api/admin/stats')).status, 200);
     assert.equal((await admin.call('PATCH', `/api/admin/staff/${admin.user.id}`, { active: false })).status, 400);
+    assert.equal((await admin.call('DELETE', `/api/admin/staff/${admin.user.id}`)).status, 400);
+    assert.equal((await admin.call('PATCH', `/api/admin/staff/${kitchenId}`, { admin_level: 'owner' })).status, 400);
+    assert.equal((await admin.call('POST', '/api/admin/staff', { name: 'X', phone: '91555555', password: 'secret1', admin_level: 'owner' })).status, 400);
+
+    // Le propriétaire crée des administrateurs (gérants).
+    const m2 = (await admin.call('POST', '/api/admin/staff', { name: 'Gérant 2', phone: '91777777', password: 'gerant1', admin_level: 'manager' })).data;
+    const m3 = (await admin.call('POST', '/api/admin/staff', { name: 'Gérant 3', phone: '91888888', password: 'gerant1', admin_level: 'manager' })).data;
+    assert.equal(m2.admin_level, 'manager');
+    const mgr = await login('91777777', 'gerant1');
+    // Un gérant ne gère que la cuisine : rien sur le propriétaire ni sur un autre gérant.
+    assert.equal((await mgr.call('POST', '/api/admin/staff', { name: 'X', phone: '91555555', password: 'secret1', admin_level: 'manager' })).status, 403);
+    for (const [m, p, b] of [
+      ['PATCH', `/api/admin/staff/${admin.user.id}`, { active: false }], ['PATCH', `/api/admin/staff/${admin.user.id}`, { password: 'pirate1' }],
+      ['DELETE', `/api/admin/staff/${admin.user.id}`], ['PATCH', `/api/admin/staff/${m3.id}`, { active: false }],
+      ['DELETE', `/api/admin/staff/${m3.id}`], ['PATCH', `/api/admin/staff/${kitchenId}`, { admin_level: 'manager' }],
+    ]) {
+      assert.equal((await mgr.call(m, p, b)).status, 403, `${m} ${p}`);
+    }
+    const k2 = (await mgr.call('POST', '/api/admin/staff', { name: 'Cuisine 2', phone: '91999999', password: 'cuisine1', admin_level: 'kitchen' })).data;
+    assert.equal(k2.admin_level, 'kitchen');
+    assert.equal((await mgr.call('PATCH', `/api/admin/staff/${k2.id}`, { active: false })).data.active, false);
+    assert.equal((await mgr.call('DELETE', `/api/admin/staff/${k2.id}`)).status, 204);
+    assert.equal((await mgr.call('PATCH', `/api/admin/staff/${m2.id}`, { name: 'Gérant deux' })).data.name, 'Gérant deux');
+    assert.equal((await mgr.call('PATCH', `/api/admin/staff/${m2.id}`, { active: false })).status, 400);
+
+    // Le propriétaire supprime un administrateur : compte anonymisé, connexion impossible.
+    assert.equal((await admin.call('DELETE', `/api/admin/staff/${m3.id}`)).status, 204);
+    assert.equal((await client().call('POST', '/api/auth/login', { phone: '91888888', password: 'gerant1' })).status, 401);
+    assert.equal(sql.prepare('SELECT deleted_at FROM users WHERE id = ?').get(m3.id).deleted_at !== null, true);
+    assert.equal((await admin.call('PATCH', `/api/admin/staff/${m2.id}`, { active: false })).data.active, false);
+    assert.equal((await mgr.call('GET', '/api/admin/stats')).status, 401, 'gérant désactivé : session fermée');
+
+    // Ancien admin sans niveau (NULL) = gérant.
+    sql.prepare('UPDATE users SET admin_level = NULL WHERE id = ?').run(m2.id);
     const list = (await admin.call('GET', '/api/admin/staff')).data;
     assert.equal(list.length, 3);
-    assert.equal(list.find((s) => s.id === admin.user.id).admin_level, 'manager');
+    assert.equal(list[0].admin_level, 'owner', 'propriétaire en tête');
+    assert.equal(list.find((x) => x.id === m2.id).admin_level, 'manager');
+    assert.ok(!list.some((x) => x.id === m3.id || x.id === k2.id));
 
     // Niveau changé : sessions fermées ; la cuisine promue gérant se reconnecte.
     r = await admin.call('PATCH', `/api/admin/staff/${kitchenId}`, { admin_level: 'manager', name: 'Chef' });
@@ -198,7 +224,7 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
     assert.equal((await kitchen.call('GET', '/api/admin/orders')).status, 401);
     await admin.call('PATCH', `/api/admin/staff/${kitchenId}`, { admin_level: 'kitchen', password: 'cuisine2' });
     kitchen = await login('91444444', 'cuisine2');
-    const audits = sql.prepare(`SELECT action FROM audit_logs WHERE action IN ('staff_created', 'staff_updated')`).all();
+    const audits = sql.prepare(`SELECT action FROM audit_logs WHERE action IN ('staff_created', 'staff_updated', 'staff_deleted')`).all();
     assert.ok(audits.length >= 5);
   });
 

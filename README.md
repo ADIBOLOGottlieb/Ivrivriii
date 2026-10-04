@@ -22,7 +22,7 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 - Profil : photo, statistiques, adresses, numéro mobile money préféré, mot de passe, thème clair / sombre / système, aide (appel, WhatsApp, FAQ), suppression du compte
 
 **Admin**
-- **Deux niveaux de personnel** : *Gérant* (tout) et *Cuisine* (commandes, disponibilité des plats, attribution des livreurs — sans argent ni réglages) ; écran **Personnel** pour créer les comptes
+- **Trois niveaux de personnel** : *Propriétaire* (compte créé au premier lancement : personne d'autre ne peut le modifier, le désactiver ni le supprimer ; il crée et supprime les administrateurs), *Gérant* (tout, et les comptes cuisine) et *Cuisine* (commandes, disponibilité des plats, attribution des livreurs — sans argent ni réglages) ; écran **Personnel**
 - Tableau de bord avec **comparaison au même jour de la semaine dernière** et **pic de commandes** (heures les plus chargées), mise en page **tablette**
 - Notification quand un livreur prend une livraison, la livre, et quand le client confirme la réception
 - **Horaires d'ouverture automatiques** par jour (plusieurs plages), plus l'interrupteur manuel
@@ -252,7 +252,7 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 | GET | `/api/geo/reverse?lat=&lng=`, `/api/geo/route?from=lat,lng&to=lat,lng` (cache) | connecté |
 | POST | `/api/orders/:id/payment-method` (Flooz ↔ Mixx avant le paiement) | client |
 | POST | `/api/client-errors` (plantages de l'app) | public |
-| GET | `/api/admin/errors?source=` · GET/POST/PATCH `/api/admin/staff[/:id]` | gérant |
+| GET | `/api/admin/errors?source=` · GET/POST/PATCH/DELETE `/api/admin/staff[/:id]` (gérants : propriétaire seulement) | gérant |
 | GET/POST/PATCH | `/api/admin/drivers[/:id]` (cuisine : lecture) · PATCH `/api/admin/orders/:id/assign` | admin |
 | GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
 | GET | `/api/admin/stats` (dont `by_channel_today`), `/api/admin/orders?status=&source=` (app ou counter), `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |

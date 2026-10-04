@@ -61,8 +61,8 @@ function createDefaultAdmin() {
     console.error(`❌ ADMIN_PHONE ${phone} appartient déjà à un compte non administrateur : admin NON créé.`);
     return false;
   }
-  // Premier compte du personnel : gérant (accès complet).
-  db.prepare(`INSERT INTO users (name, phone, password_hash, role, admin_level) VALUES (?, ?, ?, 'admin', 'manager')`).run(
+  // Premier compte du personnel : propriétaire (accès complet, ne peut être ni désactivé ni supprimé par un autre).
+  db.prepare(`INSERT INTO users (name, phone, password_hash, role, admin_level) VALUES (?, ?, ?, 'admin', 'owner')`).run(
     'Administrateur', phone, bcrypt.hashSync(password || 'admin123', 10),
   );
   // Un mot de passe fourni par l'environnement n'est jamais écrit dans les journaux.

@@ -226,7 +226,11 @@ String providerLabel(String p) {
 // ---------- Personnel ----------
 
 /// Libellé d'un niveau du personnel.
-String staffLevelLabel(String level) => level == 'kitchen' ? 'Cuisine' : 'Gérant';
+String staffLevelLabel(String level) => switch (level) {
+      'owner' => 'Propriétaire',
+      'kitchen' => 'Cuisine',
+      _ => 'Gérant',
+    };
 
 // ---------- Réglages : horaires et frais de livraison ----------
 

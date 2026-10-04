@@ -176,7 +176,7 @@ class _AdminMoreScreenState extends State<AdminMoreScreen> {
                 ListTile(
                   leading: const Icon(Icons.badge_rounded, color: AppColors.red),
                   title: const Text('Personnel'),
-                  subtitle: const Text('Comptes gérant et cuisine'),
+                  subtitle: const Text('Propriétaire, gérants et cuisine'),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () => open(const StaffScreen()),
                 ),

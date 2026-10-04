@@ -1,8 +1,12 @@
 /**
- * Personnel du restaurant (comptes role 'admin') : gérants ('manager', accès complet) et cuisine
- * ('kitchen' : commandes, disponibilité des plats, livreurs ; ni argent ni réglages).
- * Réservé au gérant ; toujours au moins un gérant actif. Actions auditées (staff_created, staff_updated).
+ * Personnel du restaurant (comptes role 'admin') :
+ *  - 'owner'   : propriétaire (un seul). Accès complet ; personne d'autre ne peut le modifier, le désactiver,
+ *                le rétrograder ou le supprimer. Il crée, modifie et supprime gérants et comptes cuisine ;
+ *  - 'manager' : gérant. Accès complet sauf la gestion des gérants : il ne gère que les comptes cuisine ;
+ *  - 'kitchen' : cuisine (commandes, disponibilité des plats, livreurs ; ni argent ni réglages).
+ * Le niveau 'owner' ne s'attribue pas par l'API. Actions auditées (staff_created, staff_updated, staff_deleted).
  */
+const crypto = require('crypto');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, transaction } = require('./db');
@@ -11,7 +15,8 @@ const { audit } = require('./monitor');
 const { h, httpError } = require('./payments/util');
 
 const LEVELS = ['manager', 'kitchen'];
-const LAST_MANAGER = 'Il faut au moins un gérant actif';
+const OWNER_PROTECTED = 'Le compte propriétaire ne peut être modifié que par le propriétaire lui-même';
+const OWNER_ONLY = 'Seul le propriétaire peut gérer les comptes gérant';
 
 function staffJson(u) {
   return {
@@ -29,13 +34,22 @@ const getStaff = (id) => {
   return u || null;
 };
 
-/** Gérants actifs (NULL = gérant), éventuellement sans un compte donné. */
-const activeManagers = (exceptId = 0) => db
-  .prepare(
-    `SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND deleted_at IS NULL AND COALESCE(active, 1) = 1
-       AND COALESCE(admin_level, 'manager') != 'kitchen' AND id != ?`,
-  )
-  .get(Number(exceptId)).n;
+/**
+ * Garantit un propriétaire actif (bases existantes) : le compte ADMIN_PHONE s'il existe, sinon le plus ancien
+ * gérant actif. Sans effet si un propriétaire existe déjà. @returns l'id promu, ou null.
+ */
+function ensureOwner() {
+  const owner = db.prepare(`SELECT id FROM users WHERE role = 'admin' AND admin_level = 'owner' AND deleted_at IS NULL`).get();
+  if (owner) return null;
+  const managers = `role = 'admin' AND deleted_at IS NULL AND COALESCE(active, 1) = 1 AND COALESCE(admin_level, 'manager') != 'kitchen'`;
+  const envPhone = process.env.ADMIN_PHONE ? normalizePhone(process.env.ADMIN_PHONE) : null;
+  const pick = (envPhone && db.prepare(`SELECT id FROM users WHERE ${managers} AND phone = ?`).get(envPhone))
+    || db.prepare(`SELECT id FROM users WHERE ${managers} ORDER BY created_at, id LIMIT 1`).get();
+  if (!pick) return null;
+  db.prepare(`UPDATE users SET admin_level = 'owner' WHERE id = ?`).run(pick.id);
+  audit('staff_owner_assigned', { details: { staffId: pick.id, reason: 'migration' } });
+  return pick.id;
+}
 
 function checkPassword(password) {
   if (typeof password !== 'string' || password.length < 6) throw httpError(400, 'Le mot de passe doit contenir au moins 6 caractères');
@@ -49,15 +63,30 @@ function checkName(name) {
 }
 
 function checkLevel(level) {
+  if (level === 'owner') throw httpError(400, 'Il ne peut y avoir qu\'un seul propriétaire');
   if (!LEVELS.includes(level)) throw httpError(400, 'Niveau invalide (manager ou kitchen)');
   return level;
+}
+
+const isOwner = (user) => user?.admin_level === 'owner';
+
+/**
+ * Droit d'agir sur un membre : le propriétaire sur tous les autres ; un gérant sur les comptes cuisine
+ * (et sur lui-même pour son nom / mot de passe) ; personne d'autre sur le propriétaire.
+ */
+function assertCanManage(actor, member) {
+  const level = adminLevelOf(member);
+  if (member.id === actor.id) return;
+  if (level === 'owner') throw httpError(403, OWNER_PROTECTED);
+  if (level === 'manager' && !isOwner(actor)) throw httpError(403, OWNER_ONLY);
 }
 
 const router = express.Router();
 
 router.get('/api/admin/staff', requireManager, h((_req, res) => {
   const rows = db
-    .prepare(`SELECT * FROM users WHERE role = 'admin' AND deleted_at IS NULL ORDER BY name COLLATE NOCASE, id`)
+    .prepare(`SELECT * FROM users WHERE role = 'admin' AND deleted_at IS NULL
+              ORDER BY CASE admin_level WHEN 'owner' THEN 0 ELSE 1 END, name COLLATE NOCASE, id`)
     .all();
   res.json(rows.map(staffJson));
 }));
@@ -69,6 +98,7 @@ router.post('/api/admin/staff', requireManager, h((req, res) => {
   if (!isValidPhone(phone)) throw httpError(400, 'Numéro de téléphone invalide');
   checkPassword(body.password);
   const level = checkLevel(body.admin_level);
+  if (level === 'manager' && !isOwner(req.user)) throw httpError(403, OWNER_ONLY);
   if (db.prepare('SELECT id FROM users WHERE phone = ?').get(phone)) throw httpError(409, 'Ce numéro est déjà utilisé');
   const info = db
     .prepare(`INSERT INTO users (name, phone, password_hash, role, admin_level, active) VALUES (?, ?, ?, 'admin', ?, 1)`)
@@ -81,7 +111,10 @@ router.post('/api/admin/staff', requireManager, h((req, res) => {
 router.patch('/api/admin/staff/:id', requireManager, h((req, res) => {
   const member = getStaff(req.params.id);
   if (!member) throw httpError(404, 'Membre du personnel introuvable');
+  assertCanManage(req.user, member);
   const { name, password, admin_level: level, active } = req.body || {};
+  const currentLevel = adminLevelOf(member);
+  const self = member.id === req.user.id;
   const sets = [];
   const params = [];
   const changed = {};
@@ -96,8 +129,11 @@ router.patch('/api/admin/staff/:id', requireManager, h((req, res) => {
     params.push(bcrypt.hashSync(password, 10));
     changed.password = true;
   }
-  const currentLevel = adminLevelOf(member);
-  if (level !== undefined && checkLevel(level) !== currentLevel) {
+  if (level !== undefined && level !== currentLevel) {
+    if (currentLevel === 'owner') throw httpError(400, 'Le propriétaire garde son niveau');
+    if (self) throw httpError(400, 'Vous ne pouvez pas changer votre propre niveau');
+    checkLevel(level);
+    if (level === 'manager' && !isOwner(req.user)) throw httpError(403, OWNER_ONLY);
     sets.push('admin_level = ?');
     params.push(level);
     changed.admin_level = [currentLevel, level];
@@ -105,24 +141,48 @@ router.patch('/api/admin/staff/:id', requireManager, h((req, res) => {
   if (active !== undefined) {
     if (![true, false, 0, 1].includes(active)) throw httpError(400, 'Valeur invalide pour active');
     if (Number(member.active ?? 1) !== (active ? 1 : 0)) {
+      if (currentLevel === 'owner') throw httpError(400, 'Le compte propriétaire ne peut pas être désactivé');
+      if (self) throw httpError(400, 'Vous ne pouvez pas désactiver votre propre compte');
       sets.push('active = ?');
       params.push(active ? 1 : 0);
       changed.active = !!active;
     }
   }
   if (sets.length) {
-    transaction(() => {
-      // Le dernier gérant actif ne peut être ni rétrogradé ni désactivé.
-      const losesManager = currentLevel === 'manager' && Number(member.active ?? 1) === 1
-        && ((changed.admin_level && level === 'kitchen') || changed.active === false);
-      if (losesManager && activeManagers(member.id) === 0) throw httpError(400, LAST_MANAGER);
-      db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...params, member.id);
-    });
-    // Nouveau mot de passe ou niveau changé : les sessions ouvertes sont fermées (nouvelle connexion).
-    if (changed.password || changed.admin_level) bumpTokenVersion(member.id);
+    db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...params, member.id);
+    // Nouveau mot de passe, niveau changé ou compte désactivé : les sessions ouvertes sont fermées.
+    if (changed.password || changed.admin_level || changed.active === false) bumpTokenVersion(member.id);
     audit('staff_updated', { userId: req.user.id, details: { staffId: member.id, ...changed }, ip: req.ip });
   }
   res.json(staffJson(getStaff(member.id)));
 }));
 
-module.exports = { router, staffJson };
+/**
+ * Suppression d'un compte du personnel (propriétaire : gérants et cuisine ; gérant : cuisine).
+ * Anonymisation comme pour un client : les commandes et le journal d'audit restent.
+ */
+router.delete('/api/admin/staff/:id', requireManager, h((req, res) => {
+  const member = getStaff(req.params.id);
+  if (!member) throw httpError(404, 'Membre du personnel introuvable');
+  if (member.id === req.user.id) throw httpError(400, 'Vous ne pouvez pas supprimer votre propre compte');
+  assertCanManage(req.user, member);
+  transaction(() => {
+    db.prepare(
+      `UPDATE users SET name = 'Compte supprimé', phone = ?, email = NULL, address = NULL, momo_phone = NULL,
+         avatar_url = NULL, password_hash = ?, active = 0, token_version = COALESCE(token_version, 0) + 1,
+         deleted_at = datetime('now') WHERE id = ?`,
+    ).run(
+      `supprime-${member.id}-${crypto.randomBytes(6).toString('hex')}`,
+      bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10),
+      member.id,
+    );
+  });
+  audit('staff_deleted', {
+    userId: req.user.id,
+    details: { staffId: member.id, name: member.name, admin_level: adminLevelOf(member) },
+    ip: req.ip,
+  });
+  res.status(204).end();
+}));
+
+module.exports = { router, staffJson, ensureOwner };

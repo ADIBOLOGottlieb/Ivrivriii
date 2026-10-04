@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../widgets/app_nav_bar.dart';
 import '../../models.dart';
 import '../../services/driver_api.dart';
 import '../../services/driver_tracker.dart';
@@ -156,24 +157,22 @@ class DriverShellState extends State<DriverShell> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const DriverTrackingBanner(),
-          NavigationBar(
-            height: 68,
-            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          AppNavBar(
             selectedIndex: _index,
-            onDestinationSelected: goTo,
-            destinations: [
-              NavigationDestination(
+            onSelected: goTo,
+            items: [
+              AppNavItem(
                 icon: _badgeIcon(Icons.delivery_dining_outlined, _availableCount),
                 selectedIcon: _badgeIcon(Icons.delivery_dining_rounded, _availableCount),
                 label: 'À livrer',
               ),
-              NavigationDestination(
+              AppNavItem(
                 icon: _badgeIcon(Icons.two_wheeler_outlined, _mineCount),
                 selectedIcon: _badgeIcon(Icons.two_wheeler_rounded, _mineCount),
                 label: 'En cours',
               ),
-              const NavigationDestination(icon: Icon(Icons.history_rounded), label: 'Historique'),
-              const NavigationDestination(
+              const AppNavItem(icon: Icon(Icons.history_rounded), label: 'Historique'),
+              const AppNavItem(
                 icon: Icon(Icons.person_outline_rounded),
                 selectedIcon: Icon(Icons.person_rounded),
                 label: 'Profil',

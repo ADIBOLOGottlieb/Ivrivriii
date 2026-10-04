@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../widgets/app_nav_bar.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
 import '../../services/order_alert.dart';
@@ -240,14 +241,11 @@ class AdminShellState extends State<AdminShell> {
 
     return Scaffold(
       body: body,
-      // Libellés courts sur une seule ligne : toutes les icônes restent alignées.
-      bottomNavigationBar: NavigationBar(
-        height: 68,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      bottomNavigationBar: AppNavBar(
         selectedIndex: selected,
-        onDestinationSelected: (i) => goTo(tabs[i]),
-        destinations: [
-          for (final d in destinations) NavigationDestination(icon: d.$1, selectedIcon: d.$2, label: d.$3),
+        onSelected: (i) => goTo(tabs[i]),
+        items: [
+          for (final d in destinations) AppNavItem(icon: d.$1, selectedIcon: d.$2, label: d.$3),
         ],
       ),
     );

@@ -125,7 +125,11 @@ function bumpTokenVersion(userId) {
 const isInactive = (user) => user.active !== undefined && user.active !== null && Number(user.active) === 0;
 
 /** Niveau du personnel : 'manager' | 'kitchen' pour un admin (NULL en base = gérant), sinon null. */
-const adminLevelOf = (user) => (user?.role === 'admin' ? (user.admin_level === 'kitchen' ? 'kitchen' : 'manager') : null);
+/** Niveau d'un compte du personnel : 'owner' (propriétaire, intouchable), 'manager' (gérant, NULL = gérant) ou 'kitchen'. */
+const adminLevelOf = (user) => {
+  if (user?.role !== 'admin') return null;
+  return ['owner', 'kitchen'].includes(user.admin_level) ? user.admin_level : 'manager';
+};
 
 /**
  * Vérifie le jeton « Bearer » de la requête.

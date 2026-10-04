@@ -110,8 +110,8 @@ Future<StaffMember> createStaff({
       'admin_level': adminLevel,
     })));
 
-/// Modifie un compte du personnel (champs null non envoyés). Le serveur refuse de retirer
-/// le dernier gérant actif (« Il faut au moins un gérant actif »).
+/// Modifie un compte du personnel (champs null non envoyés). Le serveur refuse toute modification du
+/// propriétaire par un autre compte, et la gestion des gérants à un non-propriétaire.
 Future<StaffMember> updateStaff(int id, {String? name, String? password, String? adminLevel, bool? active}) async =>
     StaffMember.fromJson(_map(await Api.instance.patch('/admin/staff/$id', {
       'name': ?name,
@@ -119,6 +119,12 @@ Future<StaffMember> updateStaff(int id, {String? name, String? password, String?
       'admin_level': ?adminLevel,
       'active': ?active,
     })));
+
+/// Supprime un compte du personnel (anonymisé ; ses commandes restent). Propriétaire : gérants et cuisine ;
+/// gérant : comptes cuisine. Le propriétaire et son propre compte ne peuvent pas être supprimés.
+Future<void> deleteStaff(int id) async {
+  await Api.instance.delete('/admin/staff/$id');
+}
 
 // ---------- Journal des erreurs (gérant) ----------
 

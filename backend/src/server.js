@@ -119,6 +119,9 @@ app.use(createErrorRouter());
 app.use(createGeoRouter());
 // Personnel : gérants et comptes cuisine (staff.js).
 app.use(require('./staff').router);
+// Bases existantes : un propriétaire (compte ADMIN_PHONE ou plus ancien gérant) que personne d'autre ne peut désactiver.
+// (Après account.js, qui ajoute la colonne deleted_at.)
+require('./staff').ensureOwner();
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });

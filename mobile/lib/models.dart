@@ -17,7 +17,7 @@ class AppUser {
   final String? momoPhone; // numéro mobile money préféré, pré-rempli au paiement
   final bool phoneVerified; // numéro vérifié par code SMS
   final DateTime? termsAcceptedAt; // acceptation des CGU et de la politique de confidentialité
-  /// Personnel (role 'admin') : 'manager' (tout) ou 'kitchen' (commandes seulement) ; null sinon.
+  /// Personnel (role 'admin') : 'owner' (propriétaire), 'manager' (gérant) ou 'kitchen' (commandes seulement) ; null sinon.
   final String? adminLevel;
 
   AppUser({
@@ -39,8 +39,10 @@ class AppUser {
   bool get isDriver => role == 'driver';
   /// Compte « cuisine » : commandes, disponibilité des plats, livreurs (sans argent ni réglages).
   bool get isKitchen => isAdmin && adminLevel == 'kitchen';
-  /// Gérant : accès complet (argent, réglages, personnel). Ancien compte admin sans niveau = gérant.
+  /// Gérant ou propriétaire : accès complet (argent, réglages, personnel). Ancien compte admin sans niveau = gérant.
   bool get isManager => isAdmin && adminLevel != 'kitchen';
+  /// Propriétaire : seul à gérer les gérants ; personne d'autre ne peut le désactiver ni le supprimer.
+  bool get isOwner => isAdmin && adminLevel == 'owner';
 
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
         id: _int(j['id']),
@@ -269,7 +271,7 @@ class StaffMember {
   final int id;
   final String name;
   final String phone;
-  final String adminLevel; // 'manager' ou 'kitchen'
+  final String adminLevel; // 'owner', 'manager' ou 'kitchen'
   final bool active;
   final DateTime createdAt;
 
@@ -283,12 +285,13 @@ class StaffMember {
   });
 
   bool get isKitchen => adminLevel == 'kitchen';
+  bool get isOwner => adminLevel == 'owner';
 
   factory StaffMember.fromJson(Map<String, dynamic> j) => StaffMember(
         id: _int(j['id']),
         name: j['name'] ?? '',
         phone: j['phone'] ?? '',
-        adminLevel: j['admin_level'] == 'kitchen' ? 'kitchen' : 'manager',
+        adminLevel: j['admin_level'] == 'kitchen' || j['admin_level'] == 'owner' ? '${j['admin_level']}' : 'manager',
         active: j['active'] != false && j['active'] != 0,
         createdAt: _parseDate(j['created_at']),
       );
