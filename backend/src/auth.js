@@ -124,33 +124,66 @@ function bumpTokenVersion(userId) {
 /** Vrai si le compte est désactivé (colonne active = 0 ; absente sur une très vieille base = actif). */
 const isInactive = (user) => user.active !== undefined && user.active !== null && Number(user.active) === 0;
 
-function requireAuth(req, res, next) {
+/** Niveau du personnel : 'manager' | 'kitchen' pour un admin (NULL en base = gérant), sinon null. */
+const adminLevelOf = (user) => (user?.role === 'admin' ? (user.admin_level === 'kitchen' ? 'kitchen' : 'manager') : null);
+
+/**
+ * Vérifie le jeton « Bearer » de la requête.
+ * @returns {{ user: object } | { status: number, body: object }} utilisateur (req.user) ou refus
+ */
+function authenticate(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Non authentifié' });
+  if (!token) return { status: 401, body: { error: 'Non authentifié' } };
   let payload;
   try {
     payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
   } catch {
-    return res.status(401).json({ error: SESSION_EXPIRED });
+    return { status: 401, body: { error: SESSION_EXPIRED } };
   }
   // Jeton d'une autre base (base effacée puis recréée : les ids recommencent) → refusé.
-  if (payload.iid !== INSTANCE_ID) return res.status(401).json({ error: SESSION_EXPIRED });
+  if (payload.iid !== INSTANCE_ID) return { status: 401, body: { error: SESSION_EXPIRED } };
   // Un jeton reste valable 30 jours : on refuse celui d'un compte supprimé ou anonymisé.
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(payload.id);
-  if (!user || user.deleted_at) return res.status(401).json({ error: SESSION_EXPIRED });
+  if (!user || user.deleted_at) return { status: 401, body: { error: SESSION_EXPIRED } };
   // Mot de passe changé / réinitialisé depuis l'émission du jeton → session terminée.
-  if (Number(payload.tv) !== Number(user.token_version ?? 0)) return res.status(401).json({ error: SESSION_EXPIRED });
-  // Compte désactivé (livreur) : la session est refusée immédiatement, sans attendre l'expiration.
-  if (isInactive(user)) return res.status(401).json({ error: INACTIVE_MESSAGE, code: 'account_disabled' });
-  // Le rôle vient de la base : un admin rétrogradé perd l'accès sans attendre l'expiration du jeton.
-  req.user = { ...payload, role: user.role, name: user.name };
+  if (Number(payload.tv) !== Number(user.token_version ?? 0)) return { status: 401, body: { error: SESSION_EXPIRED } };
+  // Compte désactivé (livreur, personnel) : la session est refusée immédiatement, sans attendre l'expiration.
+  if (isInactive(user)) return { status: 401, body: { error: INACTIVE_MESSAGE, code: 'account_disabled' } };
+  // Le rôle et le niveau viennent de la base : un admin rétrogradé perd l'accès sans attendre l'expiration du jeton.
+  return { user: { ...payload, role: user.role, name: user.name, admin_level: adminLevelOf(user) } };
+}
+
+function requireAuth(req, res, next) {
+  const r = authenticate(req);
+  if (!r.user) return res.status(r.status).json(r.body);
+  req.user = r.user;
   next();
 }
 
+/** Authentification facultative : req.user rempli si le jeton est valide, sinon la requête continue sans. */
+function optionalAuth(req, _res, next) {
+  try {
+    const r = authenticate(req);
+    if (r.user) req.user = r.user;
+  } catch {
+    // jeton illisible : requête anonyme
+  }
+  next();
+}
+
+/** Tout le personnel (gérant et cuisine). */
 function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Accès réservé à l\'administrateur' });
+    next();
+  });
+}
+
+/** Gérant uniquement : argent, réglages, catalogue, personnel, monitoring (la cuisine reçoit 403). */
+function requireManager(req, res, next) {
+  requireAdmin(req, res, () => {
+    if (req.user.admin_level === 'kitchen') return res.status(403).json({ error: 'Accès réservé au gérant' });
     next();
   });
 }
@@ -169,7 +202,10 @@ module.exports = {
   signToken,
   requireAuth,
   requireAdmin,
+  requireManager,
   requireDriver,
+  optionalAuth,
+  adminLevelOf,
   isInactive,
   INACTIVE_MESSAGE,
   bumpTokenVersion,

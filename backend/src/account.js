@@ -9,7 +9,7 @@ const multer = require('multer');
 const { rateLimit } = require('express-rate-limit');
 const { db, transaction } = require('./db');
 const {
-  requireAuth, requireAdmin, signToken, normalizePhone, isValidPhone, isInactive, INACTIVE_MESSAGE,
+  requireAuth, requireManager, signToken, normalizePhone, isValidPhone, isInactive, INACTIVE_MESSAGE, adminLevelOf,
 } = require('./auth');
 const { log } = require('./logger');
 const { audit, raiseAlert } = require('./monitor');
@@ -112,6 +112,8 @@ function publicUser(u) {
     phone_verified: Number(u.phone_verified ?? 0) === 1,
     terms_accepted_at: u.terms_accepted_at ?? null,
     terms_version: u.terms_version ?? null,
+    // Personnel : 'manager' (gérant) ou 'kitchen' (cuisine) ; null pour un client ou un livreur.
+    admin_level: adminLevelOf(u),
   };
 }
 
@@ -496,7 +498,7 @@ function resolveResetAlerts(otpId) {
 }
 
 // Admin : demandes en attente (code en clair À COMMUNIQUER au client, mode sans SMS uniquement).
-router.get('/api/admin/password-resets', requireAdmin, h((_req, res) => {
+router.get('/api/admin/password-resets', requireManager, h((_req, res) => {
   const rows = db
     .prepare(`SELECT r.*, u.name, u.role FROM password_resets r JOIN users u ON u.id = r.user_id
               WHERE r.status = 'pending' AND r.channel = 'admin' AND r.expires_at > ? ORDER BY r.id DESC LIMIT 100`)
@@ -514,7 +516,7 @@ router.get('/api/admin/password-resets', requireAdmin, h((_req, res) => {
   })));
 }));
 
-router.post('/api/admin/password-resets/:id/done', requireAdmin, h((req, res) => {
+router.post('/api/admin/password-resets/:id/done', requireManager, h((req, res) => {
   const id = Number(req.params.id);
   const info = db
     .prepare(`UPDATE password_resets SET status = 'done', code = NULL, done_at = datetime('now'), done_by = ?

@@ -14,11 +14,18 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 - Menu par catégories, recherche toujours visible, section « Les plus demandés »
 - Panier (jusqu'à 999 par article, appui long sur la quantité pour la saisir), total estimé avec livraison et frais mobile money
 - Livraison : position sur la carte (recherche d'adresse, « Ma position », adresse retrouvée automatiquement) ou adresses enregistrées
+- Frais de livraison fixes ou **selon la distance** (devis affiché avant de commander, zone maximale)
+- Horaires d'ouverture affichés (« Fermé — ouvre lundi à 10:00 »), commande impossible hors horaires
 - Paiement : espèces, **Flooz** (Moov Africa) ou **Mixx by Yas** par **push USSD** : le client confirme avec son code PIN sur son téléphone (jamais dans l'app)
-- Suivi en temps réel, annulation tant que la commande est en attente, « Paiement non abouti » → Réessayer / Annuler
+- **Suivi du livreur en direct** sur la carte (scooter qui avance, heure d'arrivée estimée), annulation tant que la commande est en attente, « Paiement non abouti » → Réessayer / Annuler
 - Profil : photo, statistiques, adresses, numéro mobile money préféré, mot de passe, thème clair / sombre / système, aide (appel, WhatsApp, FAQ), suppression du compte
 
 **Admin**
+- **Deux niveaux de personnel** : *Gérant* (tout) et *Cuisine* (commandes, disponibilité des plats, attribution des livreurs — sans argent ni réglages) ; écran **Personnel** pour créer les comptes
+- Tableau de bord avec **comparaison au même jour de la semaine dernière** et **pic de commandes** (heures les plus chargées), mise en page **tablette**
+- Notification quand un livreur prend une livraison, la livre, et quand le client confirme la réception
+- **Horaires d'ouverture automatiques** par jour (plusieurs plages), plus l'interrupteur manuel
+- **Journal des erreurs** : plantages de l'app et erreurs du serveur, conservés dans la base (sauvegardée)
 - Tableau de bord, commandes (alerte « Nouvelle commande », notification « Paiement reçu »), menu, catégories, clients
 - **Paiements à vérifier** : validation manuelle (référence obligatoire, montant contrôlé) ou rejet
 - **Encaissements** : totaux par jour et opérateur (encaissé, frais, net, reversé), reversement par lot, export CSV
@@ -60,6 +67,7 @@ Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstrati
 | `FIREBASE_SERVICE_ACCOUNT` | compte de service Firebase (JSON brut ou base64) : notifications push |
 | `SMS_PROVIDER`, `SMS_HTTP_URL`, `SMS_HTTP_METHOD`, `SMS_HTTP_HEADERS`, `SMS_HTTP_BODY` | passerelle SMS (codes de vérification, mot de passe oublié) ; `none` par défaut |
 | `PUBLIC_URL` | adresse publique de l'API (liens des CGU et de la confidentialité) |
+| `OSRM_URL`, `NOMINATIM_URL` | serveurs d'itinéraire et d'adresses (par défaut : serveurs publics OpenStreetMap). L'app passe par le serveur, qui met les réponses en cache et respecte 1 requête/s pour Nominatim |
 
 Aucune clé secrète ni aucun numéro marchand n'est écrit dans le code ou dans l'APK : tout passe par ces variables (sur Render : *Environment*).
 
@@ -175,6 +183,8 @@ Circuit d'une commande en livraison :
 4. Le livreur appuie sur **Livraison faite**, puis le client appuie sur **J'ai reçu ma commande** : la commande est **complète**.
 5. Sans « Reçu » du client, la commande est confirmée automatiquement après 12 h (réglable : Paramètres → Livraison).
 
+**Suivi en direct** : pendant une livraison, le téléphone du livreur envoie sa position toutes les 10 s environ (même écran verrouillé, avec la notification « Livraison en cours »). Le client voit le scooter avancer et l'heure d'arrivée estimée. Le partage s'arrête dès « Livraison faite » ; aucune position n'est enregistrée en dehors d'une livraison.
+
 Un livreur désactivé ne peut plus se connecter ; ses livraisons en cours restent visibles par l'admin, qui peut les réattribuer. Toutes ces actions sont inscrites au journal d'audit.
 
 ## 7. Comptes, notifications et pages légales
@@ -209,7 +219,7 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 - `PAYMENT_PROVIDER=paygate` (ou kadev) et **retirer `ALLOW_SIMULATION`** : en simulation, n'importe quel client peut valider lui-même son paiement.
 - Sauvegarde configurée (ci-dessus) ou disque persistant.
 - `ADMIN_PASSWORD` fort ; `JWT_SECRET` généré par Render.
-- Google Play : chaque build de la CI porte un numéro de version croissant (`--build-number`) ; l'APK de production n'autorise que HTTPS (HTTP réservé aux builds de développement).
+- Google Play : la CI produit aussi le fichier **AAB** (artefact `ivrivrii-chicken-aab`) exigé pour la publication ; chaque build porte un numéro de version croissant (`--build-number`) ; l'APK de production n'autorise que HTTPS (HTTP réservé aux builds de développement).
 
 ## API (résumé)
 
@@ -226,11 +236,19 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 | GET/POST | `/api/admin/payments/review` · `/api/admin/payments/:id/validate` · `/:id/reject` · `/api/admin/payments/recent` · `/merchant` · POST `/reconcile` | admin |
 | GET/POST | `/api/driver/orders?scope=` (available, mine, history) · POST `/api/driver/orders/:id/take` · `/delivered` · `/release` · GET `/api/driver/stats` | livreur |
 | POST | `/api/orders/:id/received` | client |
-| GET/POST/PATCH | `/api/admin/drivers[/:id]` · PATCH `/api/admin/orders/:id/assign` | admin |
+| POST | `/api/driver/location` (position pendant une livraison) | livreur |
+| GET | `/api/delivery/quote?lat=&lng=` (frais de livraison) | public |
+| GET | `/api/geo/reverse?lat=&lng=`, `/api/geo/route?from=lat,lng&to=lat,lng` (cache) | connecté |
+| POST | `/api/orders/:id/payment-method` (Flooz ↔ Mixx avant le paiement) | client |
+| POST | `/api/client-errors` (plantages de l'app) | public |
+| GET | `/api/admin/errors?source=` · GET/POST/PATCH `/api/admin/staff[/:id]` | gérant |
+| GET/POST/PATCH | `/api/admin/drivers[/:id]` (cuisine : lecture) · PATCH `/api/admin/orders/:id/assign` | admin |
 | GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
 | GET | `/api/admin/stats`, `/api/admin/orders?status=`, `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
 | PATCH | `/api/admin/orders/:id/status` (pas de cuisine avant paiement mobile money) | admin |
 | POST/PUT/DELETE | `/api/admin/products[/:id]`, `/api/admin/categories[/:id]` · POST `/api/admin/upload` · PUT `/api/admin/settings` | admin |
 | POST | `/api/payments/paygate/webhook`, `/api/payments/kadev/webhook` | prestataires |
+
+« admin » = tout le personnel ; « gérant » = niveau Gérant seulement. Réservés au gérant : statistiques, réglages, menu (création/modification), clients, paiements, encaissements, remboursements, surveillance, audit, mots de passe oubliés, personnel, erreurs.
 
 Les prix et montants sont toujours recalculés par le serveur à partir du catalogue.

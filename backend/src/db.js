@@ -1,5 +1,6 @@
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
+const { parseOpeningHours } = require('./hours');
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'ivrivrii.db');
 const db = new DatabaseSync(DB_PATH);
@@ -7,6 +8,8 @@ const db = new DatabaseSync(DB_PATH);
 db.exec(`
   PRAGMA foreign_keys = ON;
   PRAGMA journal_mode = WAL;
+  -- Attend jusqu'à 5 s qu'un autre accès (sauvegarde, test) libère la base au lieu d'échouer.
+  PRAGMA busy_timeout = 5000;
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,6 +191,37 @@ addColumn('orders', 'payment_token', 'TEXT');
 addColumn('orders', 'paid_at', 'TEXT');
 // Taux des frais mobile money figé à la création (commission de l'agrégateur ou réglage admin).
 addColumn('orders', 'payment_fee_percent', 'REAL');
+// Distance estimée restaurant → client (km, 1 décimale) calculée à la création de la commande.
+addColumn('orders', 'delivery_distance_km', 'REAL');
+// Niveau du personnel (role 'admin') : 'manager' (gérant) ou 'kitchen' (cuisine) ; NULL = gérant.
+addColumn('users', 'admin_level', 'TEXT');
+
+db.exec(`
+  -- Dernière position d'un livreur, enregistrée seulement pendant une livraison (suivi en direct).
+  CREATE TABLE IF NOT EXISTS driver_locations (
+    driver_id INTEGER PRIMARY KEY,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    accuracy REAL,
+    heading REAL,
+    speed REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Journal des erreurs : plantages de l'app (POST /api/client-errors) et erreurs du serveur (log.error).
+  CREATE TABLE IF NOT EXISTS error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL CHECK (source IN ('app', 'server')),
+    message TEXT NOT NULL,
+    stack TEXT,
+    context TEXT,
+    app_version TEXT,
+    platform TEXT,
+    user_id INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_error_logs_source ON error_logs(source, created_at);
+`);
 
 // Paiements mobile money : suivi de l'argent (brut, frais, net, reversement, remboursement).
 for (const [col, def] of [
@@ -274,6 +308,14 @@ function getSettings() {
     restaurant_lng: optionalNumber(s.restaurant_lng),
     // Passage automatique à « livrée » sans « Reçu » du client (heures après « Livraison faite »).
     delivery_auto_confirm_hours: Number(s.delivery_auto_confirm_hours ?? 12),
+    // Frais de livraison : 'fixed' (delivery_fee) ou 'distance' (base + km au-delà des km inclus).
+    delivery_fee_mode: s.delivery_fee_mode === 'distance' ? 'distance' : 'fixed',
+    delivery_fee_per_km: Number(s.delivery_fee_per_km ?? 200),
+    delivery_free_km: Number(s.delivery_free_km ?? 2),
+    delivery_max_km: Number(s.delivery_max_km ?? 0), // 0 = illimité
+    // Horaires d'ouverture (hours.js) ; is_open ci-dessus = interrupteur manuel.
+    hours_enabled: (s.hours_enabled ?? '0') === '1',
+    opening_hours: parseOpeningHours(s.opening_hours),
   };
 }
 

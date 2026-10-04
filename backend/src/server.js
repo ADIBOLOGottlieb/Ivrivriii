@@ -7,7 +7,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const multer = require('multer');
 const { db, transaction, getSettings } = require('./db');
 const authModule = require('./auth');
-const { requireAuth, requireAdmin } = authModule;
+const { requireAuth, requireAdmin, requireManager } = authModule;
 const { seedIfEmpty } = require('./seed');
 const { log, requestLogger, lastHourMetrics } = require('./logger');
 const { audit, raiseAlert, checkOrder, startMonitoring, orderRate } = require('./monitor');
@@ -15,6 +15,10 @@ const payments = require('./payments');
 const delivery = require('./delivery');
 const { ORDER_STATUSES, adminTransitionError } = require('./order-status');
 const notify = require('./notify');
+const { computeDeliveryFee } = require('./delivery-fee');
+const hours = require('./hours');
+const { createGeoRouter } = require('./geo');
+const { createErrorRouter } = require('./error-log');
 
 /** Téléphone normalisé (auth.js) ; repli : numéro tel quel. */
 const normalizePhone = (p) => (typeof authModule.normalizePhone === 'function' ? authModule.normalizePhone(p) : p) || p;
@@ -93,6 +97,7 @@ app.delete('/api/auth/me', (req, res, next) => {
     if (res.statusCode < 300 && req.user?.id) {
       try {
         delivery.releaseDriverOrders(req.user.id, 'driver_account_deleted');
+        delivery.forgetDriverLocation(req.user.id);
       } catch (err) {
         log.error('libération des livraisons', { userId: req.user.id, error: err.message });
       }
@@ -104,6 +109,12 @@ app.delete('/api/auth/me', (req, res, next) => {
 app.use(require('./account').router);
 // Notifications push : enregistrement des jetons des appareils (push.js).
 app.use(require('./push').router);
+// Journal des erreurs : rapports de plantage de l'app et consultation par le gérant (error-log.js).
+app.use(createErrorRouter());
+// Cartes : adresse d'une position et itinéraire, via le serveur avec cache (geo.js).
+app.use(createGeoRouter());
+// Personnel : gérants et comptes cuisine (staff.js).
+app.use(require('./staff').router);
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -185,7 +196,10 @@ function mapProduct(p) {
   return { ...p, available: !!p.available, popular: !!p.popular };
 }
 
-/** Retire le jeton de paiement et ajoute l'URL de paiement pour le propriétaire de la commande. */
+/**
+ * Retire le jeton de paiement et ajoute l'URL de paiement pour le propriétaire de la commande,
+ * ainsi que le suivi en direct (driver_location, eta_minutes : voir delivery.trackingInfo).
+ */
 function presentOrder(o, viewer) {
   if (!o) return o;
   const { payment_token, ...rest } = o;
@@ -193,7 +207,12 @@ function presentOrder(o, viewer) {
   const canPay =
     viewer && viewer.id === o.user_id && payment_token && payments.usesBrowserCheckout(o.payment_method) &&
     ['pending', 'failed', 'expired'].includes(o.payment_status) && o.status !== 'cancelled';
-  return { ...rest, pay_url: canPay ? `/pay/${o.id}?t=${payment_token}` : null };
+  return {
+    ...rest,
+    delivery_distance_km: o.delivery_distance_km ?? null,
+    ...delivery.trackingInfo(o),
+    pay_url: canPay ? `/pay/${o.id}?t=${payment_token}` : null,
+  };
 }
 
 // Commande + nom du client + livreur (driver_name, driver_phone : null sans livreur).
@@ -243,12 +262,32 @@ function feeSettings() {
   };
 }
 
+/**
+ * Ouverture et frais de livraison exposés à l'app. is_open = état EFFECTIF (interrupteur manuel
+ * et horaires) ; manual_open = interrupteur manuel seul.
+ */
+function openingAndFees(s) {
+  const state = hours.openState(s);
+  return {
+    is_open: state.is_open,
+    manual_open: s.is_open,
+    hours_enabled: s.hours_enabled,
+    opening_hours: s.opening_hours,
+    next_opening_at: state.next_opening_at,
+    next_closing_at: state.next_closing_at,
+    delivery_fee_mode: s.delivery_fee_mode,
+    delivery_fee_per_km: s.delivery_fee_per_km,
+    delivery_free_km: s.delivery_free_km,
+    delivery_max_km: s.delivery_max_km,
+  };
+}
+
 app.get('/api/settings', h((req, res) => {
   const s = getSettings();
   res.json({
     delivery_fee: s.delivery_fee,
     min_order: s.min_order,
-    is_open: s.is_open,
+    ...openingAndFees(s),
     restaurant_phone: s.restaurant_phone,
     restaurant_address: s.restaurant_address,
     ...feeSettings(),
@@ -261,6 +300,15 @@ app.get('/api/settings', h((req, res) => {
     delivery_auto_confirm_hours: s.delivery_auto_confirm_hours,
     ...accountSettings(req),
   });
+}));
+
+// Devis des frais de livraison pour une position (même calcul que la commande, delivery-fee.js).
+app.get('/api/delivery/quote', h((req, res) => {
+  const { lat, lng } = req.query;
+  const given = (v) => v !== undefined && v !== '';
+  let loc = null;
+  if (given(lat) || given(lng)) loc = parseLocation({ lat, lng });
+  res.json(computeDeliveryFee(getSettings(), loc));
 }));
 
 app.get('/api/categories', h((_req, res) => {
@@ -290,7 +338,9 @@ function parseLocation(location) {
 
 app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   const settings = getSettings();
-  if (!settings.is_open) throw httpError(400, 'Le restaurant est actuellement fermé');
+  // Interrupteur manuel et horaires d'ouverture (hours.js).
+  const openState = hours.openState(settings);
+  if (!openState.is_open) throw httpError(400, hours.closedMessage(openState));
 
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const { items, mode, payment_method, location } = body;
@@ -325,7 +375,10 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
 
   const subtotal = lines.reduce((s, l) => s + l.product.price * l.qty, 0);
   if (subtotal < settings.min_order) throw httpError(400, `Commande minimum : ${settings.min_order} FCFA`);
-  const deliveryFee = mode === 'delivery' ? settings.delivery_fee : 0;
+  // Frais de livraison recalculés par le serveur (jamais le montant envoyé par l'app) : fixe ou selon la distance.
+  const quote = mode === 'delivery' ? computeDeliveryFee(settings, loc) : null;
+  if (quote && !quote.within_zone) throw httpError(400, quote.message);
+  const deliveryFee = quote ? quote.fee : 0;
   // Commission de l'agrégateur reportée sur le client : le restaurant reçoit sous-total + livraison.
   // Le taux est figé sur la commande (net calculé au même taux au moment du paiement).
   const { fee: paymentFee, percent: paymentFeePercent } = payments.paymentFeeDetails(subtotal + deliveryFee, payment_method);
@@ -335,14 +388,15 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
     const info = db
       .prepare(
         `INSERT INTO orders (user_id, mode, address, phone, note, payment_method, subtotal, delivery_fee, total,
-           payment_fee, payment_fee_percent, payment_status, payment_token, delivery_lat, delivery_lng, delivery_accuracy)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           payment_fee, payment_fee_percent, payment_status, payment_token, delivery_lat, delivery_lng, delivery_accuracy,
+           delivery_distance_km)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         req.user.id, mode, mode === 'delivery' ? address.slice(0, 300) : null, phone.slice(0, 20),
         note.slice(0, 300) || null, payment_method, subtotal, deliveryFee, subtotal + deliveryFee + paymentFee,
         paymentFee, paymentFeePercent, mobile ? 'pending' : 'unpaid', mobile ? payments.newToken() : null,
-        loc?.lat ?? null, loc?.lng ?? null, loc?.accuracy ?? null,
+        loc?.lat ?? null, loc?.lng ?? null, loc?.accuracy ?? null, quote?.distance_km ?? null,
       );
     const insertItem = db.prepare(
       'INSERT INTO order_items (order_id, product_id, name, unit_price, quantity) VALUES (?, ?, ?, ?, ?)',
@@ -401,18 +455,81 @@ app.post('/api/orders/:id/cancel', requireAuth, h((req, res) => {
   res.json(presentOrder(loadOrder(order.id), req.user));
 }));
 
+// Changer d'opérateur mobile money (Flooz ↔ Mixx) avant de payer : frais et total recalculés.
+app.post('/api/orders/:id/payment-method', requireAuth, h((req, res) => {
+  const method = req.body?.payment_method;
+  if (!payments.MOBILE_METHODS.includes(method)) throw httpError(400, 'Moyen de paiement invalide (flooz ou mixx)');
+  const order = loadOrder(Number(req.params.id));
+  if (!order || order.user_id !== req.user.id) throw httpError(404, 'Commande introuvable');
+  if (!payments.isMobileMoney(order.payment_method)) throw httpError(400, 'Cette commande se paie en espèces');
+  if (order.payment_status === 'paid') throw httpError(400, 'Cette commande est déjà payée');
+  if (order.payment_status === 'refunded') throw httpError(400, 'Cette commande a été remboursée');
+  if (order.status !== 'pending') throw httpError(400, 'Le moyen de paiement ne peut plus être changé');
+  const pendingAttempt = db
+    .prepare(`SELECT id FROM payments WHERE order_id = ? AND status = 'pending'
+                AND (expires_at IS NULL OR expires_at > datetime('now')) LIMIT 1`)
+    .get(order.id);
+  if (pendingAttempt) throw httpError(400, 'Une demande de paiement est en cours : attendez son expiration');
+  if (order.payment_method === method) return res.json(presentOrder(order, req.user));
+  // Même calcul qu'à la création : le restaurant reçoit sous-total + livraison, au taux du nouvel opérateur.
+  const { fee, percent } = payments.paymentFeeDetails(order.subtotal + order.delivery_fee, method);
+  const total = order.subtotal + order.delivery_fee + fee;
+  const info = db
+    .prepare(`UPDATE orders SET payment_method = ?, payment_fee = ?, payment_fee_percent = ?, total = ?, updated_at = datetime('now')
+              WHERE id = ? AND status = 'pending' AND payment_method = ? AND payment_status NOT IN ('paid', 'refunded')`)
+    .run(method, fee, percent, total, order.id, order.payment_method);
+  if (!info.changes) throw httpError(409, 'La commande vient de changer : rechargez-la');
+  audit('payment_method_changed', {
+    userId: req.user.id,
+    details: { orderId: order.id, from: order.payment_method, to: method, total: [order.total, total] },
+    ip: req.ip,
+  });
+  res.json(presentOrder(loadOrder(order.id), req.user));
+}));
+
 // ---------- Admin ----------
+// Tout le personnel (requireAdmin) : commandes, statut, disponibilité des plats. Le reste : gérant (requireManager).
 
 // Chiffre « encaissé ou à encaisser » : commande non annulée ET (espèces OU payée en ligne).
 const COUNTED = `status != 'cancelled' AND (payment_method = 'cash' OR payment_status = 'paid')`;
 
-app.get('/api/admin/stats', requireAdmin, h((_req, res) => {
+/** Évolution en % (1 décimale) ; null si la référence vaut 0. */
+const changePercent = (now, before) => (before ? Math.round(((now - before) / before) * 1000) / 10 : null);
+
+/** Fenêtre de 2 heures consécutives la plus chargée (end_hour peut valoir 24) ; null sans commande. */
+function peakWindow(hourly) {
+  let best = null;
+  for (let hour = 0; hour <= 22; hour++) {
+    const n = hourly[hour] + hourly[hour + 1];
+    if (n > 0 && (!best || n > best.orders)) best = { start_hour: hour, end_hour: hour + 2, orders: n };
+  }
+  return best;
+}
+
+app.get('/api/admin/stats', requireManager, h((_req, res) => {
   const today = db
     .prepare(
       `SELECT COUNT(*) AS orders, COALESCE(SUM(CASE WHEN ${COUNTED} THEN total END), 0) AS revenue
        FROM orders WHERE date(created_at) = date('now')`,
     )
     .get();
+  // Même jour la semaine dernière, jusqu'à la même heure (comparaison à moment égal de la journée).
+  const sameDayLastWeek = db
+    .prepare(
+      `SELECT COUNT(*) AS orders, COALESCE(SUM(CASE WHEN ${COUNTED} THEN total END), 0) AS revenue
+       FROM orders WHERE date(created_at) = date('now', '-7 days') AND created_at <= datetime('now', '-7 days')`,
+    )
+    .get();
+  // Commandes non annulées des 30 derniers jours, par heure (Lomé = UTC).
+  const hourly = Array(24).fill(0);
+  for (const r of db
+    .prepare(
+      `SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour, COUNT(*) AS n FROM orders
+       WHERE status != 'cancelled' AND created_at >= datetime('now', '-30 days') GROUP BY hour`,
+    )
+    .all()) {
+    if (r.hour >= 0 && r.hour < 24) hourly[r.hour] = Number(r.n);
+  }
   // Total : commandes livrées, hors remboursées.
   const total = db
     .prepare(`SELECT COUNT(*) AS orders, COALESCE(SUM(total), 0) AS revenue FROM orders
@@ -439,7 +556,21 @@ app.get('/api/admin/stats', requireAdmin, h((_req, res) => {
        GROUP BY day ORDER BY day`,
     )
     .all();
-  res.json({ today, total, active, pending, customers, alerts, topProducts, last7Days });
+  res.json({
+    today,
+    total,
+    active,
+    pending,
+    customers,
+    alerts,
+    topProducts,
+    last7Days,
+    same_day_last_week: { orders: Number(sameDayLastWeek.orders), revenue: Number(sameDayLastWeek.revenue) },
+    revenue_change_percent: changePercent(today.revenue, sameDayLastWeek.revenue),
+    orders_change_percent: changePercent(today.orders, sameDayLastWeek.orders),
+    hourly,
+    peak_window: peakWindow(hourly),
+  });
 }));
 
 // Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0.
@@ -485,7 +616,7 @@ app.patch('/api/admin/orders/:id/status', requireAdmin, h((req, res) => {
   res.json(presentOrder(updated, req.user));
 }));
 
-app.post('/api/admin/categories', requireAdmin, h((req, res) => {
+app.post('/api/admin/categories', requireManager, h((req, res) => {
   const { position } = req.body || {};
   const name = optText(req.body?.name, 'Nom');
   const icon = optText(req.body?.icon, 'Icône');
@@ -497,7 +628,7 @@ app.post('/api/admin/categories', requireAdmin, h((req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM categories WHERE id = ?').get(info.lastInsertRowid));
 }));
 
-app.put('/api/admin/categories/:id', requireAdmin, h((req, res) => {
+app.put('/api/admin/categories/:id', requireManager, h((req, res) => {
   const { position } = req.body || {};
   const name = optText(req.body?.name, 'Nom');
   const icon = optText(req.body?.icon, 'Icône');
@@ -509,7 +640,7 @@ app.put('/api/admin/categories/:id', requireAdmin, h((req, res) => {
   res.json(db.prepare('SELECT * FROM categories WHERE id = ?').get(Number(req.params.id)));
 }));
 
-app.delete('/api/admin/categories/:id', requireAdmin, h((req, res) => {
+app.delete('/api/admin/categories/:id', requireManager, h((req, res) => {
   db.prepare('DELETE FROM categories WHERE id = ?').run(Number(req.params.id));
   audit('category_deleted', { userId: req.user.id, details: { id: Number(req.params.id) }, ip: req.ip });
   res.status(204).end();
@@ -528,7 +659,7 @@ function productFields(body) {
   return [cat, name, description || null, p, imageUrl || null, available === false ? 0 : 1, popular ? 1 : 0];
 }
 
-app.post('/api/admin/products', requireAdmin, h((req, res) => {
+app.post('/api/admin/products', requireManager, h((req, res) => {
   const info = db
     .prepare(
       `INSERT INTO products (category_id, name, description, price, image_url, available, popular)
@@ -539,7 +670,7 @@ app.post('/api/admin/products', requireAdmin, h((req, res) => {
   res.status(201).json(mapProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid)));
 }));
 
-app.put('/api/admin/products/:id', requireAdmin, h((req, res) => {
+app.put('/api/admin/products/:id', requireManager, h((req, res) => {
   const before = db.prepare('SELECT price FROM products WHERE id = ?').get(Number(req.params.id));
   const info = db
     .prepare(
@@ -565,19 +696,19 @@ app.patch('/api/admin/products/:id/availability', requireAdmin, h((req, res) => 
   res.json(mapProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(Number(req.params.id))));
 }));
 
-app.delete('/api/admin/products/:id', requireAdmin, h((req, res) => {
+app.delete('/api/admin/products/:id', requireManager, h((req, res) => {
   db.prepare('DELETE FROM products WHERE id = ?').run(Number(req.params.id));
   audit('product_deleted', { userId: req.user.id, details: { id: Number(req.params.id) }, ip: req.ip });
   res.status(204).end();
 }));
 
-app.post('/api/admin/upload', requireAdmin, upload.single('image'), h((req, res) => {
+app.post('/api/admin/upload', requireManager, upload.single('image'), h((req, res) => {
   if (!req.file) throw httpError(400, 'Image invalide (JPEG, PNG ou WebP, max 5 Mo)');
   res.status(201).json({ url: `/uploads/${req.file.filename}` });
 }));
 
 // 200 comptes au plus ; ?q= recherche (nom, téléphone, e-mail).
-app.get('/api/admin/users', requireAdmin, h((req, res) => {
+app.get('/api/admin/users', requireManager, h((req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 50) : '';
   const params = [];
   let where = '';
@@ -603,7 +734,7 @@ app.get('/api/admin/users', requireAdmin, h((req, res) => {
   );
 }));
 
-app.put('/api/admin/settings', requireAdmin, h((req, res) => {
+app.put('/api/admin/settings', requireManager, h((req, res) => {
   const numeric = {
     delivery_fee: [0, 100000],
     min_order: [0, 1000000],
@@ -613,8 +744,26 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
     high_amount_alert: [1000, 100000000],
     momo_unpaid_cancel_minutes: [5, 1440],
     delivery_auto_confirm_hours: [1, 72],
+    // Frais de livraison selon la distance (delivery-fee.js) ; delivery_max_km 0 = illimité.
+    delivery_fee_per_km: [0, 50000],
+    delivery_free_km: [0, 100],
+    delivery_max_km: [0, 200],
   };
   const text = ['restaurant_phone', 'restaurant_address'];
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (body.delivery_fee_mode !== undefined && !['fixed', 'distance'].includes(body.delivery_fee_mode)) {
+    throw httpError(400, 'Mode de frais de livraison invalide (fixed ou distance)');
+  }
+  if (body.hours_enabled !== undefined && ![true, false, 0, 1].includes(body.hours_enabled)) {
+    throw httpError(400, 'Valeur invalide pour hours_enabled');
+  }
+  // Horaires d'ouverture : validés (hours.js) et enregistrés au format JSON normalisé.
+  let openingHours;
+  if (body.opening_hours !== undefined) {
+    const r = hours.validateOpeningHours(body.opening_hours);
+    if (r.error) throw httpError(400, r.error);
+    openingHours = r.value;
+  }
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   const changed = {};
   // Position du restaurant : les deux coordonnées ensemble (ou aucune), null pour effacer.
@@ -661,17 +810,32 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
       upsert.run(key, String(req.body[key]).trim().slice(0, 200));
       changed[key] = req.body[key];
     }
+    // is_open = interrupteur manuel (l'ouverture effective dépend aussi des horaires).
     if (req.body?.is_open !== undefined) {
       upsert.run('is_open', req.body.is_open ? '1' : '0');
       changed.is_open = !!req.body.is_open;
+    }
+    if (body.delivery_fee_mode !== undefined) {
+      upsert.run('delivery_fee_mode', body.delivery_fee_mode);
+      changed.delivery_fee_mode = body.delivery_fee_mode;
+    }
+    if (body.hours_enabled !== undefined) {
+      upsert.run('hours_enabled', body.hours_enabled ? '1' : '0');
+      changed.hours_enabled = !!body.hours_enabled;
+    }
+    if (openingHours !== undefined) {
+      upsert.run('opening_hours', JSON.stringify(openingHours));
+      changed.opening_hours = openingHours;
     }
   });
   audit('settings_changed', { userId: req.user.id, details: changed, ip: req.ip });
   // payment_fee_percent est validé et enregistré, mais ignoré pour le calcul tant que la commission
   // de l'agrégateur est définie en variable d'environnement (payment_fee_source = 'aggregator').
   // Réponse au même format que GET /api/settings.
+  const s = getSettings();
   res.json({
-    ...getSettings(),
+    ...s,
+    ...openingAndFees(s),
     ...feeSettings(),
     payment_mode: payments.paymentInfo().mode,
     payment_provider: payments.paymentInfo().provider,
@@ -682,7 +846,7 @@ app.put('/api/admin/settings', requireAdmin, h((req, res) => {
 
 // ---------- Sécurité & monitoring ----------
 
-app.get('/api/admin/monitoring', requireAdmin, h((_req, res) => {
+app.get('/api/admin/monitoring', requireManager, h((_req, res) => {
   const count = (sql) => db.prepare(sql).get().n;
   const { last10, baselinePer10 } = orderRate();
   res.json({
@@ -706,14 +870,14 @@ app.get('/api/admin/monitoring', requireAdmin, h((_req, res) => {
   });
 }));
 
-app.post('/api/admin/alerts/:id/resolve', requireAdmin, h((req, res) => {
+app.post('/api/admin/alerts/:id/resolve', requireManager, h((req, res) => {
   const info = db.prepare('UPDATE alerts SET resolved = 1 WHERE id = ?').run(Number(req.params.id));
   if (info.changes === 0) throw httpError(404, 'Alerte introuvable');
   audit('alert_resolved', { userId: req.user.id, details: { id: Number(req.params.id) }, ip: req.ip });
   res.json({ ok: true });
 }));
 
-app.get('/api/admin/audit', requireAdmin, h((req, res) => {
+app.get('/api/admin/audit', requireManager, h((req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   res.json(
     db

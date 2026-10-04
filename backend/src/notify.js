@@ -41,15 +41,18 @@ const STATUS_TEXT = {
   confirmed: () => 'Votre commande est confirmée.',
   preparing: () => 'Votre commande est en préparation.',
   ready: (o) => (o.mode === 'pickup' ? 'Votre commande est prête : vous pouvez venir la chercher.' : 'Votre commande est prête, un livreur va la prendre en charge.'),
-  delivering: () => 'Votre commande est en route avec le livreur.',
+  delivering: (_o, extra) => `Votre commande est en route avec ${extra?.driverName || 'le livreur'}. Suivez-la en direct dans l'app.`,
   delivered: (o) => (o.mode === 'pickup' ? 'Commande récupérée. Bon appétit !' : 'Commande livrée. Bon appétit !'),
   cancelled: () => 'Votre commande a été annulée.',
 };
 
-/** Changement de statut → client (+ livreurs quand une livraison devient disponible). */
-function statusChanged(order, status) {
+/**
+ * Changement de statut → client (+ livreurs quand une livraison devient disponible).
+ * extra.driverName : nom du livreur (statut 'delivering').
+ */
+function statusChanged(order, status, extra = {}) {
   const text = STATUS_TEXT[status];
-  if (text) toUser(order.user_id, { title: `Commande n°${order.id}`, body: text(order), data: data(order) });
+  if (text) toUser(order.user_id, { title: `Commande n°${order.id}`, body: text(order, extra), data: data(order) });
   if (status === 'ready' && order.mode === 'delivery') readyForDrivers(order);
 }
 
@@ -71,11 +74,34 @@ function deliveryAssigned(order, driverId) {
   });
 }
 
-/** « Livraison faite » du livreur → client. */
-function driverDelivered(order) {
+/** Livraison prise par un livreur → administrateurs. */
+function driverTook(order, driverName) {
+  toRole('admin', {
+    title: 'Livraison prise en charge',
+    body: `${driverName || 'Un livreur'} a pris la livraison n°${order.id}`,
+    data: data(order),
+  });
+}
+
+/** « Livraison faite » du livreur → client et administrateurs. */
+function driverDelivered(order, driverName = order.driver_name) {
   toUser(order.user_id, {
     title: `Commande n°${order.id}`,
     body: 'Le livreur indique vous avoir livré — confirmez la réception.',
+    data: data(order),
+  });
+  toRole('admin', {
+    title: 'Livraison faite',
+    body: `Commande n°${order.id} livrée par ${driverName || 'le livreur'}`,
+    data: data(order),
+  });
+}
+
+/** « Reçu » du client → administrateurs. */
+function deliveryReceived(order) {
+  toRole('admin', {
+    title: 'Réception confirmée',
+    body: `Commande n°${order.id} : réception confirmée par le client`,
     data: data(order),
   });
 }
@@ -86,4 +112,6 @@ function paymentReceived(order, amount) {
   toRole('admin', { title: 'Paiement reçu', body: `Commande n°${order.id} – ${amount} FCFA`, data: data(order) });
 }
 
-module.exports = { newOrder, statusChanged, readyForDrivers, deliveryAssigned, driverDelivered, paymentReceived };
+module.exports = {
+  newOrder, statusChanged, readyForDrivers, deliveryAssigned, driverTook, driverDelivered, deliveryReceived, paymentReceived,
+};

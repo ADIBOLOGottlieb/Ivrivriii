@@ -16,6 +16,23 @@ function scrub(value, depth = 0) {
   return out;
 }
 
+// Erreurs serveur copiées dans la table error_logs (error-log.js), visibles par le gérant.
+// Aucune dépendance au chargement : db.js n'est utilisé que s'il est DÉJÀ ouvert (start.js restaure la
+// sauvegarde avant de l'ouvrir) ; le drapeau évite toute boucle si l'écriture elle-même journalise une erreur.
+const DB_MODULE = require.resolve('./db');
+let persisting = false;
+function persistError(message, data) {
+  if (persisting || !require.cache[DB_MODULE]) return;
+  persisting = true;
+  try {
+    require('./error-log').recordServerError(message, data);
+  } catch {
+    // base indisponible : la ligne reste dans le fichier journal
+  } finally {
+    persisting = false;
+  }
+}
+
 function write(level, message, data) {
   const entry = { time: new Date().toISOString(), level, message, ...scrub(data || {}) };
   const line = JSON.stringify(entry);
@@ -24,6 +41,8 @@ function write(level, message, data) {
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else if (process.env.LOG_CONSOLE !== '0') console.log(line);
+  // Les lignes d'accès « http » en 5xx ne sont pas copiées : la cause est journalisée à part.
+  if (level === 'error' && message !== 'http') persistError(message, scrub(data || {}));
 }
 
 const log = {

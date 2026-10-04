@@ -94,3 +94,10 @@ services:
       # Adresse publique de l'API (liens des CGU et de la politique de confidentialité).
       - key: PUBLIC_URL
         value: https://ivrivrii-api.onrender.com
+      # Cartes (facultatif) : serveurs d'itinéraire et d'adresses appelés par le serveur (cache + 1 requête/s).
+      # Par défaut : serveurs publics gratuits d'OpenStreetMap, sans garantie de service. Pour la production,
+      # pointez vers votre propre OSRM / Nominatim (gratuits à héberger) ou un service payant compatible.
+      - key: OSRM_URL
+        sync: false
+      - key: NOMINATIM_URL
+        sync: false

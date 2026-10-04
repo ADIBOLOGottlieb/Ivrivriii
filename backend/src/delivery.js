@@ -12,10 +12,11 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSettings } = require('./db');
 const authModule = require('./auth');
-const { requireAuth, requireAdmin, requireDriver } = authModule;
+const { requireAuth, requireAdmin, requireManager, requireDriver } = authModule;
 const { log } = require('./logger');
 const { audit } = require('./monitor');
 const notify = require('./notify');
+const { roadKm } = require('./delivery-fee');
 
 /** Téléphone normalisé (auth.js) ; repli : numéro tel quel. */
 const normalizePhone = (p) => (typeof authModule.normalizePhone === 'function' ? authModule.normalizePhone(p) : p) || p;
@@ -53,6 +54,51 @@ function driverJson(id) {
     delivered_count: Number(u.delivered_count),
     created_at: u.created_at,
   };
+}
+
+// ---------- Suivi du livreur en direct ----------
+
+// Position conservée seulement pendant une livraison ; au-delà de 10 min sans mise à jour, elle n'est plus montrée.
+const LOCATION_MAX_AGE_MS = 10 * 60 * 1000;
+// Envois trop rapprochés ignorés (l'app envoie toutes les ~5 s ou tous les ~25 m).
+const LOCATION_MIN_INTERVAL_MS = 3000;
+// Estimation d'arrivée : distance par la route (vol d'oiseau × 1,3) à 20 km/h, + 1 min de marge.
+const ETA_SPEED_KMH = 20;
+
+/** Date SQLite « YYYY-MM-DD HH:MM:SS » (UTC) → millisecondes. */
+const sqlMs = (v) => (v ? Date.parse(`${String(v).replace(' ', 'T')}Z`) : NaN);
+
+/** Livraisons en cours d'un livreur (prises et pas encore indiquées « Livraison faite »). */
+const activeDeliveries = (driverId) => db
+  .prepare(`SELECT COUNT(*) AS n FROM orders WHERE driver_id = ? AND status = 'delivering' AND driver_delivered_at IS NULL`)
+  .get(Number(driverId)).n;
+
+/** Oublie la dernière position d'un livreur (fin des livraisons, compte supprimé ou désactivé). */
+function forgetDriverLocation(driverId) {
+  db.prepare('DELETE FROM driver_locations WHERE driver_id = ?').run(Number(driverId));
+}
+
+/**
+ * Suivi d'une commande pour presentOrder : position du livreur (livraison en cours, position de moins
+ * de 10 min) et minutes estimées jusqu'au client.
+ * @returns {{ driver_location: object|null, eta_minutes: number|null }}
+ */
+function trackingInfo(order) {
+  const none = { driver_location: null, eta_minutes: null };
+  if (!order || order.status !== 'delivering' || order.driver_delivered_at || !order.driver_id) return none;
+  const loc = db.prepare('SELECT * FROM driver_locations WHERE driver_id = ?').get(order.driver_id);
+  if (!loc || !(Date.now() - sqlMs(loc.updated_at) < LOCATION_MAX_AGE_MS)) return none;
+  const km = roadKm({ lat: loc.lat, lng: loc.lng }, { lat: order.delivery_lat, lng: order.delivery_lng });
+  return {
+    driver_location: { lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy, heading: loc.heading, updated_at: loc.updated_at },
+    eta_minutes: km === null ? null : Math.max(1, Math.ceil((km / ETA_SPEED_KMH) * 60) + 1),
+  };
+}
+
+/** Nombre facultatif : null si absent, NaN si invalide. */
+function optNumber(v) {
+  if (v === undefined || v === null) return null;
+  return typeof v === 'number' && Number.isFinite(v) ? v : NaN;
 }
 
 function getDriverRow(id) {
@@ -129,12 +175,21 @@ function releaseOrphanDeliveries() {
   return n;
 }
 
+/** Positions des livreurs sans livraison en cours (statut changé par l'admin, app fermée...) : effacées. */
+function pruneDriverLocations() {
+  return Number(db.prepare(
+    `DELETE FROM driver_locations WHERE driver_id NOT IN (
+       SELECT driver_id FROM orders WHERE status = 'delivering' AND driver_delivered_at IS NULL AND driver_id IS NOT NULL)`,
+  ).run().changes);
+}
+
 function startDeliveryTasks() {
   const every = Number(process.env.DELIVERY_TASK_INTERVAL_MS) || 5 * 60 * 1000;
   const run = () => {
     try {
       releaseOrphanDeliveries();
       autoConfirmDeliveries();
+      pruneDriverLocations();
     } catch (err) {
       log.error('tâche livraisons', { error: err.message });
     }
@@ -190,8 +245,43 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
       .run(req.user.id, order.id);
     if (!info.changes) throw httpError(409, 'Cette livraison a déjà été prise par un autre livreur');
     audit('driver_take', { userId: req.user.id, details: { orderId: order.id, driverId: req.user.id }, ip: req.ip });
-    notify.statusChanged(order, 'delivering');
+    notify.statusChanged(order, 'delivering', { driverName: req.user.name });
+    notify.driverTook(order, req.user.name);
     res.json(orderJson(order.id, req.user));
+  }));
+
+  // Position du livreur (suivi en direct) : enregistrée seulement pendant une livraison en cours.
+  // tracking:false → l'app arrête d'envoyer.
+  router.post('/api/driver/location', requireDriver, h((req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const lat = optNumber(body.lat);
+    const lng = optNumber(body.lng);
+    const accuracy = optNumber(body.accuracy);
+    const heading = optNumber(body.heading);
+    const speed = optNumber(body.speed);
+    if (lat === null || lng === null || Number.isNaN(lat) || Number.isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw httpError(400, 'Position invalide');
+    }
+    if (Number.isNaN(accuracy) || (accuracy !== null && accuracy < 0)) throw httpError(400, 'Précision invalide');
+    if (Number.isNaN(heading) || (heading !== null && (heading < 0 || heading > 360))) throw httpError(400, 'Direction invalide');
+    if (Number.isNaN(speed) || (speed !== null && speed < 0)) throw httpError(400, 'Vitesse invalide');
+
+    const active = activeDeliveries(req.user.id);
+    if (active === 0) {
+      forgetDriverLocation(req.user.id);
+      return res.json({ tracking: false, active_orders: 0 });
+    }
+    const last = db.prepare('SELECT updated_at FROM driver_locations WHERE driver_id = ?').get(req.user.id);
+    if (last && Date.now() - sqlMs(last.updated_at) < LOCATION_MIN_INTERVAL_MS) {
+      return res.json({ tracking: true, active_orders: active });
+    }
+    db.prepare(
+      `INSERT INTO driver_locations (driver_id, lat, lng, accuracy, heading, speed, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(driver_id) DO UPDATE SET lat = excluded.lat, lng = excluded.lng, accuracy = excluded.accuracy,
+         heading = excluded.heading, speed = excluded.speed, updated_at = excluded.updated_at`,
+    ).run(req.user.id, lat, lng, accuracy, heading, speed);
+    res.json({ tracking: true, active_orders: active });
   }));
 
   router.post('/api/driver/orders/:id/delivered', requireDriver, h((req, res) => {
@@ -207,7 +297,9 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
         details: { orderId: order.id, driverId: req.user.id, payment_method: order.payment_method, total: order.total },
         ip: req.ip,
       });
-      notify.driverDelivered(order);
+      notify.driverDelivered(order, order.driver_name || req.user.name);
+      // Plus aucune livraison en cours : la position n'est plus conservée.
+      if (activeDeliveries(req.user.id) === 0) forgetDriverLocation(req.user.id);
     }
     res.json(orderJson(order.id, req.user));
   }));
@@ -221,6 +313,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
                 WHERE id = ? AND driver_id = ? AND status = 'delivering'`)
       .run(order.id, req.user.id);
     audit('driver_release', { userId: req.user.id, details: { orderId: order.id, driverId: req.user.id }, ip: req.ip });
+    if (activeDeliveries(req.user.id) === 0) forgetDriverLocation(req.user.id);
     notify.readyForDrivers(order);
     res.json(orderJson(order.id, req.user));
   }));
@@ -255,6 +348,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
       .run(order.id);
     if (info.changes) {
       audit('delivery_received', { userId: req.user.id, details: { orderId: order.id, driverId: order.driver_id }, ip: req.ip });
+      notify.deliveryReceived(order);
     }
     res.json(orderJson(order.id, req.user));
   }));
@@ -272,7 +366,8 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
     res.json(list);
   }));
 
-  router.post('/api/admin/drivers', requireAdmin, h((req, res) => {
+  // Création / modification des livreurs : gérant. La cuisine voit la liste et attribue les livraisons.
+  router.post('/api/admin/drivers', requireManager, h((req, res) => {
     const body = req.body || {};
     // Variante : un client existant devient livreur.
     if (body.user_id !== undefined && body.user_id !== null) {
@@ -299,7 +394,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
     res.status(201).json(driverJson(id));
   }));
 
-  router.patch('/api/admin/drivers/:id', requireAdmin, h((req, res) => {
+  router.patch('/api/admin/drivers/:id', requireManager, h((req, res) => {
     const driver = getDriverRow(req.params.id);
     if (!driver) throw httpError(404, 'Livreur introuvable');
     const { active, name, password } = req.body || {};
@@ -333,7 +428,10 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
       // Nouveau mot de passe : les sessions ouvertes du livreur sont fermées.
       if (changed.password) bumpTokenVersion(driver.id);
       // Livreur désactivé : ses livraisons en cours repartent dans « À livrer ».
-      if (changed.active === false) releaseDriverOrders(driver.id, 'driver_inactive', req.user.id);
+      if (changed.active === false) {
+        releaseDriverOrders(driver.id, 'driver_inactive', req.user.id);
+        forgetDriverLocation(driver.id);
+      }
     }
     res.json(driverJson(driver.id));
   }));
@@ -372,7 +470,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
         ip: req.ip,
       });
       notify.deliveryAssigned(order, driver.id);
-      if (order.status !== 'delivering') notify.statusChanged(order, 'delivering');
+      if (order.status !== 'delivering') notify.statusChanged(order, 'delivering', { driverName: driver.name });
     }
     res.json(orderJson(order.id, req.user));
   }));
@@ -380,4 +478,7 @@ function createDeliveryRouter({ loadOrder, loadOrders, presentOrder }) {
   return router;
 }
 
-module.exports = { createDeliveryRouter, startDeliveryTasks, autoConfirmDeliveries, releaseDriverOrders, releaseOrphanDeliveries };
+module.exports = {
+  createDeliveryRouter, startDeliveryTasks, autoConfirmDeliveries, releaseDriverOrders, releaseOrphanDeliveries,
+  trackingInfo, forgetDriverLocation, pruneDriverLocations,
+};

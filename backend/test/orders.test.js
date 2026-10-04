@@ -134,6 +134,7 @@ test('serveur : commandes, argent, livreurs', async (t) => {
   t.after(() => stop(srv));
   await waitHealth(srv);
   const sql = new DatabaseSync(path.join(dir, 'orders.db'));
+  sql.exec('PRAGMA busy_timeout = 5000');
   t.after(() => sql.close());
 
   const admin = await login('0700000000', 'admin123');

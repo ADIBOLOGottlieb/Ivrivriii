@@ -1,10 +1,10 @@
 /**
  * Routes JSON des paiements (client + administration). Montées APRÈS express.json().
- * Toute action d'argent côté admin est auditée avec l'agent (req.user.id).
+ * Toute action d'argent côté admin est auditée avec l'agent (req.user.id) ; réservée au gérant (requireManager).
  */
 const express = require('express');
 const { rateLimit } = require('express-rate-limit');
-const { requireAuth, requireAdmin } = require('../auth');
+const { requireAuth, requireManager } = require('../auth');
 const { audit } = require('../monitor');
 const providers = require('./providers');
 const core = require('./core');
@@ -72,23 +72,23 @@ function createApiRouter({ presentOrder, loadOrder }) {
 
   // ---------- Admin ----------
 
-  router.get('/api/admin/payments/review', requireAdmin, h((_req, res) => {
+  router.get('/api/admin/payments/review', requireManager, h((_req, res) => {
     res.json(core.reviewQueue());
   }));
 
-  router.post('/api/admin/payments/:id/validate', requireAdmin, h((req, res) => {
+  router.post('/api/admin/payments/:id/validate', requireManager, h((req, res) => {
     const result = core.validateManual(Number(req.params.id), {
       reference: req.body?.reference, amount: req.body?.amount, agentId: req.user.id, ip: req.ip,
     });
     res.json(pair(result, req.user));
   }));
 
-  router.post('/api/admin/payments/:id/reject', requireAdmin, h((req, res) => {
+  router.post('/api/admin/payments/:id/reject', requireManager, h((req, res) => {
     const result = core.rejectPayment(Number(req.params.id), { reason: req.body?.reason, agentId: req.user.id, ip: req.ip });
     res.json(pair(result, req.user));
   }));
 
-  router.get('/api/admin/payments/merchant', requireAdmin, h((_req, res) => {
+  router.get('/api/admin/payments/merchant', requireManager, h((_req, res) => {
     const name = providers.mainName();
     const fee = fees.feeInfo();
     res.json({
@@ -105,20 +105,20 @@ function createApiRouter({ presentOrder, loadOrder }) {
     });
   }));
 
-  router.get('/api/admin/payments/recent', requireAdmin, h((req, res) => {
+  router.get('/api/admin/payments/recent', requireManager, h((req, res) => {
     res.json(core.recentPaid(req.query.since_id));
   }));
 
   // Rapprochement à la demande (le même tourne chaque jour automatiquement).
-  router.post('/api/admin/payments/reconcile', requireAdmin, h(async (req, res) => {
+  router.post('/api/admin/payments/reconcile', requireManager, h(async (req, res) => {
     res.json(await tasks.reconcile({ agentId: req.user.id, ip: req.ip }));
   }));
 
-  router.get('/api/admin/collections', requireAdmin, h((req, res) => {
+  router.get('/api/admin/collections', requireManager, h((req, res) => {
     res.json(core.collections(req.query));
   }));
 
-  router.get('/api/admin/collections/export.csv', requireAdmin, h((req, res) => {
+  router.get('/api/admin/collections/export.csv', requireManager, h((req, res) => {
     const { payments, totals } = core.collections(req.query);
     const header = ['Paiement', 'Commande', 'Date paiement (UTC)', 'Opérateur', 'Prestataire', 'Client', 'Brut (FCFA)',
       'Frais (FCFA)', 'Net (FCFA)', 'Référence opérateur', 'Reversement', 'Référence virement', 'Date reversement', 'Remboursement'];
@@ -139,13 +139,13 @@ function createApiRouter({ presentOrder, loadOrder }) {
     res.send(`﻿${lines.join('\r\n')}\r\n`);
   }));
 
-  router.post('/api/admin/settlements', requireAdmin, h((req, res) => {
+  router.post('/api/admin/settlements', requireManager, h((req, res) => {
     res.json(core.recordSettlement({
       paymentIds: req.body?.payment_ids, reference: req.body?.reference, agentId: req.user.id, ip: req.ip,
     }));
   }));
 
-  router.post('/api/admin/orders/:id/refund', requireAdmin, h(async (req, res) => {
+  router.post('/api/admin/orders/:id/refund', requireManager, h(async (req, res) => {
     const order = await core.refundOrder(Number(req.params.id), { reference: req.body?.reference, agentId: req.user.id, ip: req.ip });
     res.json(orderJson(order.id, req.user));
   }));
