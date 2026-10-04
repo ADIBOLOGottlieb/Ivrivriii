@@ -497,11 +497,22 @@ function resolveResetAlerts(otpId) {
     .run(r.id);
 }
 
+/**
+ * Demandes qu'un membre du personnel a le droit de voir : jamais celles du propriétaire (sinon un gérant
+ * prendrait son compte avec le code) ; celles des gérants, seulement par le propriétaire.
+ */
+function resetVisibility(actor) {
+  return actor.admin_level === 'owner'
+    ? `NOT (u.role = 'admin' AND u.admin_level = 'owner')`
+    : `u.role != 'admin' OR COALESCE(u.admin_level, 'manager') = 'kitchen'`;
+}
+
 // Admin : demandes en attente (code en clair À COMMUNIQUER au client, mode sans SMS uniquement).
-router.get('/api/admin/password-resets', requireManager, h((_req, res) => {
+router.get('/api/admin/password-resets', requireManager, h((req, res) => {
   const rows = db
     .prepare(`SELECT r.*, u.name, u.role FROM password_resets r JOIN users u ON u.id = r.user_id
-              WHERE r.status = 'pending' AND r.channel = 'admin' AND r.expires_at > ? ORDER BY r.id DESC LIMIT 100`)
+              WHERE r.status = 'pending' AND r.channel = 'admin' AND r.expires_at > ? AND (${resetVisibility(req.user)})
+              ORDER BY r.id DESC LIMIT 100`)
     .all(Date.now());
   res.json(rows.map((r) => ({
     id: r.id,
@@ -518,6 +529,10 @@ router.get('/api/admin/password-resets', requireManager, h((_req, res) => {
 
 router.post('/api/admin/password-resets/:id/done', requireManager, h((req, res) => {
   const id = Number(req.params.id);
+  const visible = db
+    .prepare(`SELECT r.id FROM password_resets r JOIN users u ON u.id = r.user_id WHERE r.id = ? AND (${resetVisibility(req.user)})`)
+    .get(id);
+  if (!visible) throw httpError(404, 'Demande introuvable ou déjà traitée');
   const info = db
     .prepare(`UPDATE password_resets SET status = 'done', code = NULL, done_at = datetime('now'), done_by = ?
               WHERE id = ? AND status = 'pending'`)

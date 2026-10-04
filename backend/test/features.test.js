@@ -186,6 +186,16 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
     const m3 = (await admin.call('POST', '/api/admin/staff', { name: 'Gérant 3', phone: '91888888', password: 'gerant1', admin_level: 'manager' })).data;
     assert.equal(m2.admin_level, 'manager');
     const mgr = await login('91777777', 'gerant1');
+    // Mot de passe oublié du propriétaire : son code n'est visible par aucun gérant (ni par lui-même).
+    await client().call('POST', '/api/auth/password/forgot', { phone: '0700000000' });
+    await client().call('POST', '/api/auth/password/forgot', { phone: '91888888' });
+    const seenByMgr = (await mgr.call('GET', '/api/admin/password-resets')).data;
+    assert.ok(!seenByMgr.some((r) => r.user_id === admin.user.id || r.user_id === m3.id), 'gérant : ni propriétaire ni autre gérant');
+    const seenByOwner = (await admin.call('GET', '/api/admin/password-resets')).data;
+    assert.ok(!seenByOwner.some((r) => r.user_id === admin.user.id), 'propriétaire : pas sa propre demande');
+    assert.ok(seenByOwner.some((r) => r.user_id === m3.id), "propriétaire : voit la demande d'un gérant");
+    const ownerReset = sql.prepare("SELECT id FROM password_resets WHERE user_id = ? ORDER BY id DESC").get(admin.user.id);
+    if (ownerReset) assert.equal((await mgr.call('POST', `/api/admin/password-resets/${ownerReset.id}/done`)).status, 404);
     // Un gérant ne gère que la cuisine : rien sur le propriétaire ni sur un autre gérant.
     assert.equal((await mgr.call('POST', '/api/admin/staff', { name: 'X', phone: '91555555', password: 'secret1', admin_level: 'manager' })).status, 403);
     for (const [m, p, b] of [
