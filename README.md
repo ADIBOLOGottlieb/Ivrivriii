@@ -229,6 +229,26 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 - `ADMIN_PASSWORD` fort ; `JWT_SECRET` généré par Render.
 - Google Play : la CI produit aussi le fichier **AAB** (artefact `ivrivrii-chicken-aab`) exigé pour la publication ; chaque build porte un numéro de version croissant (`--build-number`) ; l'APK de production n'autorise que HTTPS (HTTP réservé aux builds de développement).
 
+## 9. Publication sur Google Play et l'App Store
+
+Le même code Flutter produit les deux applications. Les builds se font sur les serveurs de GitHub (onglet **Actions**) : aucun Mac n'est nécessaire.
+
+### Android — Google Play
+1. Compte **Google Play Console** au nom du restaurant (25 $, une fois). Préférez un compte « Organisation » (numéro D-U-N-S gratuit) : un compte personnel impose 14 jours de test fermé avec 12 testeurs avant la publication.
+2. Créer l'application `com.ivrivrii.ivrivrii_chicken`, remplir la fiche (icône, captures, description), le formulaire **Sécurité des données** (téléphone, position, photos) et le lien de confidentialité `https://ivrivrii-api.onrender.com/legal/confidentialite`.
+3. Envoyer à la main la **première** version : le fichier `app-release.aab` de l'artefact `ivrivrii-chicken-aab` (workflow *Build APK*). Activer « Play App Signing » (Google garde la clé de distribution ; la clé de la CI sert de clé d'importation).
+4. Ensuite, automatique : créer un compte de service Google Cloud, l'inviter dans la Play Console, et mettre sa clé JSON dans le secret GitHub `PLAY_SERVICE_ACCOUNT_JSON`. Chaque build part alors dans la piste **Tests internes** (brouillon) ; on le promeut en production depuis la console. Examen par Google : quelques heures à quelques jours.
+
+### iPhone — App Store
+1. Compte **Apple Developer** au nom du restaurant (99 $ par an ; organisation : numéro D-U-N-S).
+2. App Store Connect → **Mes apps → +** : nouvelle app, identifiant `com.ivrivrii.ivrivriiChicken` (créé d'abord dans developer.apple.com → Identifiers, avec « Push Notifications » coché si Firebase est utilisé).
+3. App Store Connect → Utilisateurs et accès → Intégrations → **Clés API** : créer une clé (rôle Admin), télécharger le fichier `.p8`.
+4. Secrets GitHub : `APPLE_TEAM_ID`, `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`, `APPSTORE_API_PRIVATE_KEY` (contenu du `.p8`). Facultatif : `GOOGLE_SERVICE_INFO_PLIST` (Firebase, app iOS) pour les notifications, avec la clé APNs (`.p8` « Apple Push Notifications ») déposée dans Firebase → Paramètres → Cloud Messaging.
+5. Le workflow **Build iOS** signe l'app (signature automatique gérée par Apple) et l'envoie sur **TestFlight**. Sans ces secrets, il vérifie seulement que l'app iOS compile.
+6. TestFlight : installer sur des iPhone de test (app TestFlight), puis **Soumettre pour examen** avec captures (iPhone 6,7"), description, confidentialité, et un **compte de démonstration** (client et admin) pour l'examinateur. Examen Apple : 1 à 3 jours, souvent avec des allers-retours.
+
+**Différences iPhone** : pas de « Partager → Ivrivrii » depuis Google Maps (le client place sa position sur la carte ou colle le lien) ; le suivi du livreur ne fonctionne qu'app ouverte (les livreurs utilisent Android) ; les notifications exigent Firebase + clé APNs.
+
 ## API (résumé)
 
 | Méthode | Route | Accès |

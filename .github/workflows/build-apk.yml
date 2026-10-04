@@ -117,3 +117,23 @@ jobs:
         with:
           name: ivrivrii-chicken-aab
           path: mobile/build/app/outputs/bundle/release/app-release.aab
+      # Publication automatique sur Google Play (piste « Tests internes », en brouillon) si le secret
+      # PLAY_SERVICE_ACCOUNT_JSON existe : compte de service Google Cloud invité dans la Play Console
+      # (Utilisateurs et autorisations → droit « Publier sur les pistes de test »).
+      # La TOUTE PREMIÈRE version doit être envoyée à la main dans la Play Console (Google l'exige) ;
+      # ensuite chaque build est envoyé ici, et il suffit de le promouvoir en production dans la console.
+      - name: Vérifier le secret Google Play
+        id: play
+        env:
+          PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$PLAY_JSON" ]; then echo "enabled=1" >> "$GITHUB_OUTPUT"; else echo "Secret PLAY_SERVICE_ACCOUNT_JSON absent : pas d'envoi sur Google Play."; fi
+      - name: Envoi sur Google Play (tests internes)
+        if: steps.play.outputs.enabled == '1'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.ivrivrii.ivrivrii_chicken
+          releaseFiles: mobile/build/app/outputs/bundle/release/app-release.aab
+          track: internal
+          status: draft

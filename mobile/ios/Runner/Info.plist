@@ -62,6 +62,14 @@
 			</dict>
 		</dict>
 	</dict>
+	<!-- App Store : l'app n'utilise que le chiffrement standard (HTTPS) — pas de déclaration d'export à chaque envoi. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- Notifications push (Firebase Cloud Messaging) reçues app en arrière-plan. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Prendre en photo les plats du menu.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
