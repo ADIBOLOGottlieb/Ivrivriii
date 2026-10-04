@@ -177,8 +177,12 @@ class CollectionsCsv {
 
 /// Télécharge l'export CSV des encaissements.
 /// Api.instance.get décode du JSON : on passe donc directement par http avec le jeton.
-Future<CollectionsCsv> downloadCollectionsCsv(Map<String, String> query) async {
-  final uri = Uri.parse('$apiBaseUrl/api/admin/collections/export.csv').replace(queryParameters: query);
+Future<CollectionsCsv> downloadCollectionsCsv(Map<String, String> query) => _downloadCsv(
+    '/admin/collections/export.csv', query, 'encaissements_${query['from'] ?? ''}_${query['to'] ?? ''}.csv');
+
+/// Télécharge un export CSV de l'API ([path] sans le préfixe /api), BOM UTF-8 garanti.
+Future<CollectionsCsv> _downloadCsv(String path, Map<String, String> query, String fileName) async {
+  final uri = Uri.parse('$apiBaseUrl/api$path').replace(queryParameters: query);
   final res = await _getRaw(uri);
   if (res.statusCode < 200 || res.statusCode >= 300) {
     var msg = 'Export impossible (${res.statusCode})';
@@ -189,7 +193,80 @@ Future<CollectionsCsv> downloadCollectionsCsv(Map<String, String> query) async {
   }
   final raw = res.bodyBytes;
   final bytes = _hasBom(raw) ? raw : Uint8List.fromList([..._utf8Bom, ...raw]);
-  return CollectionsCsv(bytes, 'encaissements_${query['from'] ?? ''}_${query['to'] ?? ''}.csv');
+  return CollectionsCsv(bytes, fileName);
+}
+
+// ---------- Rapports des ventes (gérant) ----------
+
+/// Période d'un rapport (dates incluses, heure de Lomé = UTC+0).
+Map<String, String> reportQuery(DateTime from, DateTime to) => {'from': _ymd(from), 'to': _ymd(to)};
+
+/// Rapport des ventes sur une période (GET /api/admin/reports).
+Future<SalesReport> fetchSalesReport(DateTime from, DateTime to) async =>
+    SalesReport.fromJson(_map(await Api.instance.get('/admin/reports', reportQuery(from, to))));
+
+/// Export des ventes (une ligne par commande, annulées comprises), à ouvrir dans Excel.
+Future<CollectionsCsv> downloadSalesReportCsv(DateTime from, DateTime to) {
+  final q = reportQuery(from, to);
+  return _downloadCsv('/admin/reports/export.csv', q, 'ventes-${q['from']}-${q['to']}.csv');
+}
+
+/// Statistiques du tableau de bord + répartition du jour par canal (`by_channel_today`),
+/// lues dans la même réponse que [AdminStats].
+Future<({AdminStats stats, List<ReportBucket> byChannelToday})> fetchDashboardStats() async {
+  final raw = _map(await Api.instance.get('/admin/stats'));
+  return (
+    stats: AdminStats.fromJson(raw),
+    byChannelToday: _list(raw['by_channel_today']).map((e) => ReportBucket.fromJson(e, 'channel')).toList(),
+  );
+}
+
+// ---------- Zones de livraison (gérant) ----------
+
+/// Toutes les zones (actives ou non), dans l'ordre d'affichage.
+Future<List<DeliveryZone>> fetchDeliveryZones() async {
+  final list = _list(await Api.instance.get('/admin/delivery-zones')).map(DeliveryZone.fromJson).toList();
+  list.sort((a, b) {
+    final c = a.position.compareTo(b.position);
+    return c != 0 ? c : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  });
+  return list;
+}
+
+/// Corps envoyé : cercle complet (centre + rayon) ou aucun des trois champs.
+Map<String, dynamic> _zoneBody(DeliveryZone z) => {
+      ...z.toJson(),
+      if (!z.hasArea) ...{'center_lat': null, 'center_lng': null, 'radius_km': null},
+    };
+
+/// Copie d'une zone avec une nouvelle position.
+DeliveryZone _withPosition(DeliveryZone z, int position) => DeliveryZone(
+      id: z.id,
+      name: z.name,
+      fee: z.fee,
+      active: z.active,
+      position: position,
+      centerLat: z.centerLat,
+      centerLng: z.centerLng,
+      radiusKm: z.radiusKm,
+    );
+
+Future<DeliveryZone> createDeliveryZone(DeliveryZone z) async =>
+    DeliveryZone.fromJson(_map(await Api.instance.post('/admin/delivery-zones', _zoneBody(z))));
+
+Future<DeliveryZone> updateDeliveryZone(int id, DeliveryZone z) async =>
+    DeliveryZone.fromJson(_map(await Api.instance.put('/admin/delivery-zones/$id', _zoneBody(z))));
+
+/// Supprime une zone (le serveur la désactive seulement si des commandes l'utilisent).
+Future<void> deleteDeliveryZone(int id) async {
+  await Api.instance.delete('/admin/delivery-zones/$id');
+}
+
+/// Enregistre l'ordre affiché : position = rang dans [ordered] (seules les zones déplacées sont envoyées).
+Future<void> reorderDeliveryZones(List<DeliveryZone> ordered) async {
+  for (var i = 0; i < ordered.length; i++) {
+    if (ordered[i].position != i) await updateDeliveryZone(ordered[i].id, _withPosition(ordered[i], i));
+  }
 }
 
 /// Écrit le CSV dans le dossier temporaire de l'application (sous-dossier « exports »).

@@ -311,7 +311,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 children: [
                   FadeSlideIn(child: _StatusHeader(order: o, admin: widget.admin)),
                   // Client : le livreur dit avoir livré → bouton « J'ai reçu ma commande ».
-                  if (!widget.admin && o.awaitingReceipt) ...[
+                  if (!widget.admin && !o.isCounter && o.awaitingReceipt) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
                       delay: const Duration(milliseconds: 20),
@@ -326,7 +326,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     const SizedBox(height: 16),
                     FadeSlideIn(delay: const Duration(milliseconds: 30), child: _DriverCard(order: o)),
                   ],
-                  if (widget.admin && o.isDelivery && !o.isCancelled) ...[
+                  // Vente au comptoir : ni livreur, ni carte, ni « J'ai reçu ma commande ».
+                  if (widget.admin && o.isDelivery && !o.isCounter && !o.isCancelled) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
                       delay: const Duration(milliseconds: 30),
@@ -358,7 +359,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     const SizedBox(height: 16),
                     FadeSlideIn(delay: const Duration(milliseconds: 140), child: _CustomerCard(order: o)),
                   ],
-                  if (restaurant != null && o.isDelivery && o.hasLocation && !o.isCancelled) ...[
+                  if (restaurant != null && o.isDelivery && !o.isCounter && o.hasLocation && !o.isCancelled) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
                       delay: const Duration(milliseconds: 170),
@@ -401,9 +402,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     child: Column(
                       children: [
                         ListTile(
-                          leading: Icon(o.isDelivery ? Icons.delivery_dining_rounded : Icons.storefront_rounded,
-                              color: AppColors.red),
-                          title: Text(o.isDelivery ? 'Livraison' : 'À emporter'),
+                          leading: Icon(orderModeIcon(o), color: AppColors.red),
+                          title: Text(orderModeLabel(o)),
                           subtitle: o.isDelivery && o.address != null ? Text(o.address!) : null,
                         ),
                         ListTile(
@@ -500,6 +500,16 @@ class _StatusHeader extends StatelessWidget {
       return admin
           ? 'Le livreur a indiqué « Livraison faite ». En attente du « Reçu » du client.'
           : 'Le livreur indique vous avoir livré. Confirmez la réception ci-dessous.';
+    }
+    if (order.isCounter) {
+      switch (order.status) {
+        case 'pending':
+          return 'Vente au comptoir : en attente du paiement mobile money.';
+        case 'ready':
+          return order.dineIn ? 'Commande prête à servir en salle.' : 'Commande prête à remettre au client.';
+        case 'delivered':
+          return 'Commande remise au client.';
+      }
     }
     switch (order.status) {
       case 'pending':
@@ -681,19 +691,30 @@ class _CustomerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Vente comptoir sans nom : le numéro est celui du restaurant, pas de client à appeler.
+    final anonymousCounter = order.isCounter && (order.customerName.trim().isEmpty || order.customerName == 'Comptoir');
+    final name = order.customerName.trim().isEmpty ? 'Comptoir' : order.customerName;
     return Card(
       child: ListTile(
-        leading: const CircleAvatar(
+        leading: CircleAvatar(
           backgroundColor: AppColors.yellow,
-          child: Icon(Icons.person_rounded, color: AppColors.ink),
+          child: Icon(order.isCounter ? Icons.point_of_sale_rounded : Icons.person_rounded, color: AppColors.ink),
         ),
-        title: Text(order.customerName, style: const TextStyle(fontWeight: FontWeight.w800)),
-        subtitle: Text(order.hasLocation ? '${order.phone}\nPosition GPS fournie' : order.phone),
-        isThreeLine: order.hasLocation,
-        trailing: Row(
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
+        subtitle: Text(anonymousCounter
+            ? orderModeLabel(order)
+            : order.isCounter
+                ? '${order.phone}\n${orderModeLabel(order)}'
+                : order.hasLocation
+                    ? '${order.phone}\nPosition GPS fournie'
+                    : order.phone),
+        isThreeLine: !anonymousCounter && (order.isCounter || order.hasLocation),
+        trailing: anonymousCounter
+            ? null
+            : Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (order.hasLocation) ...[
+            if (order.hasLocation && !order.isCounter) ...[
               IconButton.filled(
                 tooltip: 'Itinéraire',
                 style: IconButton.styleFrom(backgroundColor: AppColors.red),
@@ -756,7 +777,7 @@ class _ItemsCard extends StatelessWidget {
               ),
             const Divider(height: 20),
             _row(context, 'Sous-total', order.subtotal),
-            if (order.isDelivery) _row(context, 'Livraison', order.deliveryFee),
+            if (order.isDelivery) _row(context, orderDeliveryLineLabel(order), order.deliveryFee),
             if (order.paymentFee > 0) _row(context, 'Frais de paiement', order.paymentFee),
             const SizedBox(height: 4),
             Row(

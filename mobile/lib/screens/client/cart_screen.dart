@@ -11,6 +11,7 @@ import '../../widgets/common.dart';
 import '../shared/order_detail_screen.dart';
 import 'checkout_screen.dart';
 import 'opening_hours_banner.dart';
+import 'order_estimate.dart';
 import 'client_shell.dart';
 
 class CartScreen extends StatefulWidget {
@@ -22,6 +23,7 @@ class CartScreen extends StatefulWidget {
 
 class _CartScreenState extends State<CartScreen> {
   AppSettings? _settings;
+  List<DeliveryZone>? _zones;
 
   @override
   void initState() {
@@ -34,6 +36,11 @@ class _CartScreenState extends State<CartScreen> {
     try {
       final s = await Api.instance.settings(fresh: fresh);
       if (mounted) setState(() => _settings = s);
+      if (s.feeByZone && _zones == null) {
+        Api.instance.deliveryZones().then((z) {
+          if (mounted) setState(() => _zones = z);
+        }).catchError((_) {});
+      }
       // « Fermé » lu dans le cache : on vérifie auprès du serveur avant de bloquer la commande.
       if (!fresh && !s.isOpen && mounted) await _loadSettings(fresh: true);
     } catch (_) {
@@ -187,7 +194,7 @@ class _CartScreenState extends State<CartScreen> {
                         margin: const EdgeInsets.only(bottom: 10),
                         onExpired: () => _loadSettings(fresh: true),
                       ),
-                    _Summary(subtotal: cart.subtotal, count: cart.count, settings: _settings),
+                    _Summary(subtotal: cart.subtotal, count: cart.count, settings: _settings, zones: _zones),
                     const SizedBox(height: 12),
                     FilledButton(
                       // Restaurant fermé : commande impossible (bandeau ci-dessus).
@@ -207,7 +214,8 @@ class _Summary extends StatelessWidget {
   final int subtotal;
   final int count;
   final AppSettings? settings;
-  const _Summary({required this.subtotal, required this.count, required this.settings});
+  final List<DeliveryZone>? zones; // mode zone : « dès » le prix de la zone la moins chère
+  const _Summary({required this.subtotal, required this.count, required this.settings, this.zones});
 
   @override
   Widget build(BuildContext context) {
@@ -237,23 +245,47 @@ class _Summary extends StatelessWidget {
       ),
     ];
     if (s != null) {
-      final delivery = s.deliveryFee;
+      // Mode zone : prix de la zone la moins chère (« dès »), inconnu tant que les zones ne sont pas chargées.
+      final minZone = s.feeByZone ? cheapestZoneFee(zones) : null;
+      final deliveryKnown = !s.feeByZone || minZone != null;
+      final delivery = s.feeByZone ? (minZone ?? 0) : s.deliveryFee;
       final base = subtotal + delivery;
-      // Même formule que le serveur : frais (commission de l'agrégateur, par opérateur) sur sous-total + livraison.
-      final flooz = s.feePercentFor('flooz');
-      final mixx = s.feePercentFor('mixx');
+      // Même formule que le serveur : frais (commission de l'agrégateur, par opérateur) sur sous-total + livraison,
+      // seulement si le client les paie (sinon le restaurant les absorbe : 0 %).
+      final flooz = s.clientFeePercentFor('flooz');
+      final mixx = s.clientFeePercentFor('mixx');
       final totalStyle = TextStyle(fontWeight: FontWeight.w700, color: scheme.onSurface, fontSize: 13.5);
+      final totalValue = const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red);
       Widget total(String label, String method) => row(
             label,
-            Text(formatPrice(base + paymentFeeFor(base, method, s.feePercentFor(method))),
-                style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red)),
+            Text(formatPrice(base + paymentFeeFor(base, method, s.clientFeePercentFor(method))), style: totalValue),
             style: totalStyle,
           );
-      children.add(row(
-        s.feeByDistance ? 'Livraison (dès, selon la distance)' : 'Livraison (si livraison)',
-        Text(formatPrice(delivery), style: muted),
-      ));
-      if (flooz == mixx) {
+      children.add(s.feeByZone
+          ? row(
+              'Livraison (si livraison)',
+              Text(minZone == null ? 'selon la zone' : 'dès ${formatPrice(minZone)}', style: muted),
+            )
+          : row(
+              s.feeByDistance ? 'Livraison (dès, selon la distance)' : 'Livraison (si livraison)',
+              Text(formatPrice(delivery), style: muted),
+            ));
+      if (!s.clientPaysFees) {
+        // Commission absorbée par le restaurant : même prix en espèces, Flooz ou Mixx.
+        children.addAll([
+          const SizedBox(height: 2),
+          row(deliveryKnown ? 'Total estimé (avec livraison)' : 'Total estimé (hors livraison)',
+              Text(formatPrice(base), style: totalValue),
+              style: totalStyle),
+          const SizedBox(height: 2),
+          Text(
+            'Même prix en espèces, Flooz ou Mixx : aucun frais de paiement. '
+            '${s.feeByZone ? 'Livraison selon votre zone' : 'À emporter, pas de livraison'}. '
+            'Le total exact est confirmé à la commande.',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.3),
+          ),
+        ]);
+      } else if (flooz == mixx) {
         children.addAll([
           row('Frais mobile money (${formatPercent(flooz)} %)',
               Text(formatPrice(paymentFeeFor(base, 'flooz', flooz)), style: muted)),
@@ -269,14 +301,17 @@ class _Summary extends StatelessWidget {
           total('Total estimé (Mixx)', 'mixx'),
         ]);
       }
-      children.addAll([
-        const SizedBox(height: 2),
-        Text(
-          "Estimation avec livraison et paiement Flooz / Mixx (frais = commission du service de paiement). "
-          "En espèces, pas de frais ; à emporter, pas de livraison. Le total exact est confirmé à la commande.",
-          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.3),
-        ),
-      ]);
+      if (s.clientPaysFees) {
+        children.addAll([
+          const SizedBox(height: 2),
+          Text(
+            "Estimation avec livraison${s.feeByZone ? ' (zone la moins chère)' : ''} et paiement Flooz / Mixx "
+            "(frais = commission du service de paiement). "
+            "En espèces, pas de frais ; à emporter, pas de livraison. Le total exact est confirmé à la commande.",
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.3),
+          ),
+        ]);
+      }
     }
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
   }

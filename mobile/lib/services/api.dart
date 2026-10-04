@@ -476,11 +476,13 @@ class Api {
 
   /// Devis des frais de livraison pour une position (public, jamais en cache).
   /// Le montant définitif est recalculé par le serveur à la création de la commande.
-  Future<DeliveryQuote> deliveryQuote({double? lat, double? lng}) async {
+  /// [zoneId] (mode 'zone') : zone choisie par le client ; sinon le serveur la reconnaît d'après la position.
+  Future<DeliveryQuote> deliveryQuote({double? lat, double? lng, int? zoneId}) async {
     _log('Fetching delivery quote');
     final query = <String, String>{
       if (lat != null && lng != null) 'lat': lat.toStringAsFixed(6),
       if (lat != null && lng != null) 'lng': lng.toStringAsFixed(6),
+      if (zoneId != null) 'zone_id': '$zoneId',
     };
     final r = await get('/delivery/quote', query.isEmpty ? null : query);
     return DeliveryQuote.fromJson(Map<String, dynamic>.from(r as Map));
@@ -496,11 +498,24 @@ class Api {
     return Order.fromJson(await post('/orders/$orderId/payment-method', {'payment_method': method}));
   }
 
-  /// Create a new order
-  Future<Order> createOrder(Map<String, dynamic> data) async {
+  /// Zones de livraison actives (public, mode de frais 'zone'), triées par position puis nom. Cache 5 min.
+  Future<List<DeliveryZone>> deliveryZones({bool fresh = false}) async {
+    _log('Fetching delivery zones');
+    final cached = fresh ? null : getCachedValue<List<DeliveryZone>>('/delivery/zones');
+    if (cached != null) return cached;
+    final result = ((await get('/delivery/zones') as List?) ?? [])
+        .map((e) => DeliveryZone.fromJson(Map<String, dynamic>.from(e as Map)))
+        .where((z) => z.active)
+        .toList();
+    cacheValue('/delivery/zones', result, const Duration(minutes: 5));
+    return result;
+  }
+
+  /// Create a new order. [zoneId] : zone de livraison choisie (mode de frais 'zone').
+  Future<Order> createOrder(Map<String, dynamic> data, {int? zoneId}) async {
     _log('Creating new order');
     _cache.remove('/orders');
-    return Order.fromJson(await post('/orders', data));
+    return Order.fromJson(await post('/orders', {...data, 'zone_id': ?zoneId}));
   }
 
   /// Fetch user's orders
@@ -580,10 +595,12 @@ class Api {
   }
 
   /// Fetch admin orders with optional status filter
-  Future<List<Order>> adminOrders({String? status}) async {
-    _log('Fetching admin orders (status=$status)');
+  /// [source] : 'counter' (ventes comptoir) ou 'app' ; null = toutes.
+  Future<List<Order>> adminOrders({String? status, String? source}) async {
+    _log('Fetching admin orders (status=$status, source=$source)');
     _cache.remove('/admin/orders');
-    return (await get('/admin/orders', status == null ? null : {'status': status}) as List)
+    final query = <String, String>{'status': ?status, 'source': ?source};
+    return (await get('/admin/orders', query.isEmpty ? null : query) as List)
         .map((e) => Order.fromJson(e))
         .toList();
   }

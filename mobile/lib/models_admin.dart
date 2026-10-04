@@ -314,6 +314,7 @@ extension AppSettingsCopy on AppSettings {
     int? deliveryFeePerKm,
     double? deliveryFreeKm,
     double? deliveryMaxKm,
+    String? paymentFeesPaidBy,
   }) =>
       AppSettings(
         deliveryFee: deliveryFee ?? this.deliveryFee,
@@ -344,5 +345,6 @@ extension AppSettingsCopy on AppSettings {
         deliveryFeePerKm: deliveryFeePerKm ?? this.deliveryFeePerKm,
         deliveryFreeKm: deliveryFreeKm ?? this.deliveryFreeKm,
         deliveryMaxKm: deliveryMaxKm ?? this.deliveryMaxKm,
+        paymentFeesPaidBy: paymentFeesPaidBy ?? this.paymentFeesPaidBy,
       );
 }

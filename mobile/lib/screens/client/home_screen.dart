@@ -11,6 +11,7 @@ import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import 'client_shell.dart';
 import 'opening_hours_banner.dart';
+import 'order_estimate.dart';
 import 'product_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -24,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Category> _categories = [];
   List<Product> _products = [];
   AppSettings? _settings;
+  List<DeliveryZone>? _zones; // mode de frais 'zone' : pour « Livraison dès X »
   Object? _error;
   bool _loading = true;
   int? _selectedCategory;
@@ -73,6 +75,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _settings = results[2] as AppSettings;
         _loading = false;
       });
+      _loadZones(fresh: fresh);
       // Panier revalidé avec le menu à jour (prix modifiés, plats retirés ou en rupture).
       final message = context.read<CartProvider>().syncWithCatalog(products);
       if (message != null && mounted) showMessage(context, message);
@@ -86,11 +89,23 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Zones de livraison (seulement en mode 'zone'), sans bloquer l'affichage du menu.
+  Future<void> _loadZones({bool fresh = false}) async {
+    if (_settings?.feeByZone != true) return;
+    try {
+      final zones = await Api.instance.deliveryZones(fresh: fresh);
+      if (mounted) setState(() => _zones = zones);
+    } catch (_) {
+      // Sans zones : « Livraison selon la zone ».
+    }
+  }
+
   /// Heure d'ouverture / fermeture prévue passée : réglages rechargés (sans recharger le menu).
   Future<void> _refreshSettings() async {
     try {
       final s = await Api.instance.settings(fresh: true);
       if (mounted) setState(() => _settings = s);
+      if (_zones == null) _loadZones();
     } catch (_) {
       // Réseau indisponible : on garde l'état affiché.
     }
@@ -132,8 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
               topPadding: MediaQuery.paddingOf(context).top,
               firstName: (user?.name ?? '').trim().split(' ').first,
               isOpen: _settings?.isOpen ?? true,
-              deliveryFee: _settings?.deliveryFee ?? 0,
-              deliveryFeeFrom: _settings?.feeByDistance ?? false,
+              deliveryText: _settings == null ? 'Livraison' : deliveryFeeSummary(_settings!, zones: _zones),
               cartCount: cartCount,
               query: _query,
               scheme: Theme.of(context).colorScheme,
@@ -242,8 +256,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
   final double topPadding;
   final String firstName;
   final bool isOpen;
-  final int deliveryFee;
-  final bool deliveryFeeFrom; // frais selon la distance : « dès »
+  final String deliveryText; // « Livraison 500 FCFA », « dès ... », « selon la zone »
   final int cartCount;
   final String query;
   final ColorScheme scheme;
@@ -255,8 +268,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
     required this.topPadding,
     required this.firstName,
     required this.isOpen,
-    required this.deliveryFee,
-    required this.deliveryFeeFrom,
+    required this.deliveryText,
     required this.cartCount,
     required this.query,
     required this.scheme,
@@ -394,7 +406,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
                             Flexible(
                               child: Text(
                                 isOpen
-                                    ? 'Ouvert • Livraison ${deliveryFeeFrom ? 'dès ' : ''}${formatPrice(deliveryFee)}'
+                                    ? 'Ouvert • $deliveryText'
                                     : 'Fermé pour le moment',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -496,8 +508,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
     return oldDelegate.topPadding != topPadding ||
         oldDelegate.firstName != firstName ||
         oldDelegate.isOpen != isOpen ||
-        oldDelegate.deliveryFee != deliveryFee ||
-        oldDelegate.deliveryFeeFrom != deliveryFeeFrom ||
+        oldDelegate.deliveryText != deliveryText ||
         oldDelegate.cartCount != cartCount ||
         oldDelegate.query != query ||
         oldDelegate.scheme != scheme ||

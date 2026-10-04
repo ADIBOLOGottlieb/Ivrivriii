@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models.dart';
 import '../theme.dart';
 
 String formatPrice(int amount) {
@@ -117,6 +118,32 @@ String paymentStatusLabel(String status) {
 String formatCountdown(Duration d) {
   final s = d.isNegative ? 0 : d.inSeconds;
   return '${s ~/ 60}:${_two(s % 60)}';
+}
+
+/// Mode de retrait lisible : « Livraison · Tokoin », « À emporter »,
+/// « Comptoir · Sur place » / « Comptoir · À emporter » (vente saisie à la caisse).
+String orderModeLabel(Order o) {
+  if (o.isCounter) return o.dineIn ? 'Comptoir · Sur place' : 'Comptoir · À emporter';
+  if (o.isDelivery) {
+    final zone = (o.deliveryZoneName ?? '').trim();
+    return zone.isEmpty ? 'Livraison' : 'Livraison · $zone';
+  }
+  return 'À emporter';
+}
+
+/// Icône du mode de retrait (caisse pour une vente au comptoir).
+IconData orderModeIcon(Order o) => o.isCounter
+    ? Icons.point_of_sale_rounded
+    : o.isDelivery
+        ? Icons.delivery_dining_rounded
+        : Icons.storefront_rounded;
+
+/// Ligne « Livraison » d'un récapitulatif : « Livraison (Tokoin) », « Livraison (3,4 km) » ou « Livraison ».
+String orderDeliveryLineLabel(Order o) {
+  final zone = (o.deliveryZoneName ?? '').trim();
+  if (zone.isNotEmpty) return 'Livraison ($zone)';
+  final km = o.deliveryDistanceKm;
+  return km == null ? 'Livraison' : 'Livraison (${km.toStringAsFixed(1).replaceAll('.', ',')} km)';
 }
 
 String paymentLabel(String method) => paymentMethods[method] ?? _legacyPaymentLabels[method] ?? method;

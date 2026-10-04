@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../models.dart';
 import '../../services/admin_api.dart' show fetchOrdersPage, mergeFirstPage, oldestOrderId, ordersPageSize;
 import '../../services/api.dart';
+import '../../services/order_alert.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../utils/polling.dart';
@@ -11,6 +12,7 @@ import '../../widgets/common.dart';
 import '../shared/order_card.dart';
 import '../shared/order_detail_screen.dart';
 import 'admin_shell.dart';
+import 'kitchen_display_screen.dart';
 
 class AdminOrdersScreen extends StatefulWidget {
   final bool active;
@@ -38,7 +40,7 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
   bool _hasMore = false;
   bool _loadingMore = false;
   int _gen = 0; // seule la dernière requête lancée est affichée
-  int? _lastMaxId;
+  bool _alertPrimed = false; // premier passage : commandes déjà là mémorisées sans sonner
   final Set<int> _updating = {};
   int? _selectedId; // tablette : commande affichée dans le panneau de détail
   late final SmartPoller _poller;
@@ -46,6 +48,7 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
   @override
   void initState() {
     super.initState();
+    OrderAlert.instance.init();
     // Toutes les 20 s, seulement quand l'onglet est affiché, sans écran par-dessus, app au premier plan.
     _poller = SmartPoller(
       onPoll: () => _load(silent: true),
@@ -113,15 +116,20 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
     }
   }
 
-  /// Badge « en attente » et alerte quand une nouvelle commande arrive.
+  /// Badge « en attente » et alerte quand une nouvelle commande à préparer arrive : sonnerie en
+  /// boucle jusqu'à « J'ai vu » (sauf ventes saisies à la caisse de cet appareil, cf. OrderAlert).
+  /// Chargement manuel (non [silent]) : les commandes affichées sont mémorisées sans sonner.
   void _onActiveOrders(List<Order> active, {required bool silent}) {
     final pending = active.where((o) => o.status == 'pending').toList();
-    final maxId = pending.isEmpty ? null : pending.map((o) => o.id).reduce((a, b) => a > b ? a : b);
-    if (silent && maxId != null && _lastMaxId != null && maxId > _lastMaxId!) {
-      showMessage(context, '🔔 Nouvelle commande reçue !');
-    }
-    if (maxId != null && (_lastMaxId == null || maxId > _lastMaxId!)) _lastMaxId = maxId;
+    final fresh = OrderAlert.instance.checkOrders(active, prime: !silent || !_alertPrimed);
+    _alertPrimed = true;
+    if (fresh.isNotEmpty) showMessage(context, '🔔 Nouvelle commande reçue !');
     AdminShell.of(context)?.setPendingCount(pending.length);
+  }
+
+  Future<void> _openKitchenDisplay() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const KitchenDisplayScreen()));
+    if (mounted) _load();
   }
 
   /// « Charger plus » (historique) : commandes plus anciennes.
@@ -176,7 +184,14 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Commandes'),
-        actions: [IconButton(tooltip: 'Actualiser', onPressed: _load, icon: const Icon(Icons.refresh_rounded))],
+        actions: [
+          TextButton.icon(
+            onPressed: _openKitchenDisplay,
+            icon: const Icon(Icons.soup_kitchen_rounded),
+            label: const Text('Écran cuisine'),
+          ),
+          IconButton(tooltip: 'Actualiser', onPressed: _load, icon: const Icon(Icons.refresh_rounded)),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(52),
           child: SizedBox(

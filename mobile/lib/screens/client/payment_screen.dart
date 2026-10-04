@@ -10,7 +10,6 @@ import '../../services/order_events.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
-import 'order_estimate.dart' show formatKm;
 
 enum _Step { input, waiting, result }
 
@@ -322,10 +321,7 @@ class _PaymentScreenState extends State<PaymentScreen> with SingleTickerProvider
                 children: [
                   _AmountRow('Sous-total', o.subtotal),
                   if (o.isDelivery)
-                    _AmountRow(
-                      o.deliveryDistanceKm == null ? 'Livraison' : 'Livraison (${formatKm(o.deliveryDistanceKm!)})',
-                      o.deliveryFee,
-                    ),
+                    _AmountRow(orderDeliveryLineLabel(o), o.deliveryFee),
                   if (o.paymentFee > 0) _AmountRow('Frais de paiement', o.paymentFee),
                   const Divider(height: 18),
                   _AmountRow('Total à payer', o.total, bold: true),

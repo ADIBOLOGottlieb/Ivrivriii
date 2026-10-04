@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
+import '../../services/order_alert.dart';
 import '../../utils/format.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
@@ -12,6 +13,7 @@ import 'admin_layout.dart';
 import 'admin_menu_screen.dart';
 import 'admin_more_screen.dart';
 import 'admin_orders_screen.dart';
+import 'counter_screen.dart';
 import 'dashboard_screen.dart';
 
 class AdminShell extends StatefulWidget {
@@ -25,7 +27,7 @@ class AdminShell extends StatefulWidget {
 
 class AdminShellState extends State<AdminShell> {
   /// Identifiants des onglets (indépendants de leur position : le compte « cuisine » n'a pas de tableau de bord).
-  static const dashboardTab = 0, ordersTab = 1, menuTab = 2, moreTab = 3;
+  static const dashboardTab = 0, ordersTab = 1, menuTab = 2, moreTab = 3, counterTab = 4;
   int _index = 0; // identifiant de l'onglet affiché
   int _pendingCount = 0;
 
@@ -126,11 +128,14 @@ class AdminShellState extends State<AdminShell> {
 
   /// Onglets visibles : le compte « cuisine » n'a ni tableau de bord ni argent.
   List<int> _tabsFor(bool kitchen) =>
-      kitchen ? const [ordersTab, menuTab, moreTab] : const [dashboardTab, ordersTab, menuTab, moreTab];
+      kitchen
+          ? const [ordersTab, counterTab, menuTab, moreTab]
+          : const [dashboardTab, ordersTab, counterTab, menuTab, moreTab];
 
   Widget _page(int tab) => switch (tab) {
         dashboardTab => DashboardScreen(active: _index == dashboardTab),
         ordersTab => AdminOrdersScreen(active: _index == ordersTab),
+        counterTab => CounterScreen(active: _index == counterTab),
         menuTab => const AdminMenuScreen(),
         _ => const AdminMoreScreen(),
       };
@@ -152,6 +157,11 @@ class AdminShellState extends State<AdminShell> {
             _badge(_pendingCount, Icons.receipt_long_outlined),
             _badge(_pendingCount, Icons.receipt_long_rounded),
             'Commandes',
+          ),
+        counterTab => (
+            const Icon(Icons.point_of_sale_outlined),
+            const Icon(Icons.point_of_sale_rounded),
+            'Caisse',
           ),
         menuTab => (
             const Icon(Icons.restaurant_menu_outlined),
@@ -176,9 +186,23 @@ class AdminShellState extends State<AdminShell> {
     final selected = tabs.indexOf(_index);
     final destinations = [for (final t in tabs) _destination(t, reviewCount)];
 
-    final body = FadeIndexedStack(
-      index: selected,
-      children: [for (final t in tabs) _page(t)],
+    // Bandeau « Nouvelle commande ! / J'ai vu » au-dessus de tous les onglets (sonnerie en cours).
+    final body = Column(
+      children: [
+        const OrderAlertBanner(),
+        Expanded(
+          // Bandeau affiché : il occupe déjà la barre d'état, les onglets n'ont plus à s'en écarter.
+          child: ValueListenableBuilder<bool>(
+            valueListenable: OrderAlert.instance.ringing,
+            builder: (context, ringing, child) =>
+                MediaQuery.removePadding(context: context, removeTop: ringing, child: child!),
+            child: FadeIndexedStack(
+              index: selected,
+              children: [for (final t in tabs) _page(t)],
+            ),
+          ),
+        ),
+      ],
     );
 
     final width = MediaQuery.sizeOf(context).width;

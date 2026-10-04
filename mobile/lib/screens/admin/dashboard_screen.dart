@@ -5,13 +5,13 @@ import '../../models.dart';
 import '../../models_admin.dart' show frenchWeekday;
 import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
-import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import 'admin_shell.dart';
 import 'payments_review_screen.dart';
+import 'reports_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final bool active;
@@ -23,6 +23,7 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   AdminStats? _stats;
+  List<ReportBucket> _byChannelToday = const []; // ventes du jour : en ligne / comptoir
   Object? _error;
 
   @override
@@ -39,10 +40,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _load() async {
     try {
-      final s = await Api.instance.stats();
+      final r = await fetchDashboardStats();
+      final s = r.stats;
       if (!mounted) return;
       setState(() {
         _stats = s;
+        _byChannelToday = r.byChannelToday;
         _error = null;
       });
       AdminShell.of(context)?.setPendingCount(s.pending);
@@ -90,6 +93,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ..._alerts(s),
                     _tiles(s, columns: wide ? 4 : 2),
                     const SizedBox(height: 12),
+                    _channelsAndReports(wide),
+                    const SizedBox(height: 12),
                     if (!wide) ...[_deliveredTotal(s), const SizedBox(height: 20)],
                     _pair(
                       wide,
@@ -109,6 +114,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 );
               }),
             ),
+    );
+  }
+
+  /// Carte « Aujourd'hui : En ligne X · Comptoir Y » et bouton « Voir les rapports ».
+  Widget _channelsAndReports(bool wide) {
+    final scheme = Theme.of(context).colorScheme;
+    int ordersOf(String channel) =>
+        _byChannelToday.where((b) => b.key == channel).fold(0, (sum, b) => sum + b.orders);
+    int revenueOf(String channel) =>
+        _byChannelToday.where((b) => b.key == channel).fold(0, (sum, b) => sum + b.revenue);
+    final online = ordersOf('app'), counter = ordersOf('counter');
+    final card = Card(
+      child: ListTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.blue.shade600.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(Icons.storefront_rounded, color: Colors.blue.shade600, size: 20),
+        ),
+        title: Text(
+          "Aujourd'hui : En ligne $online · Comptoir $counter",
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+        subtitle: Text(
+          '${formatPrice(revenueOf('app'))} en ligne · ${formatPrice(revenueOf('counter'))} au comptoir',
+          style: TextStyle(color: scheme.onSurfaceVariant),
+        ),
+      ),
+    );
+    final button = FilledButton.tonalIcon(
+      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ReportsScreen())),
+      icon: const Icon(Icons.insights_rounded),
+      label: const Text('Voir les rapports'),
+    );
+    if (!wide) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [card, const SizedBox(height: 8), button],
+      );
+    }
+    return Row(
+      children: [Expanded(child: card), const SizedBox(width: 16), button],
     );
   }
 
@@ -477,12 +526,11 @@ class _PeakCard extends StatelessWidget {
   }
 }
 
-/// Histogramme simple du chiffre d'affaires sur 7 jours (jours sans commande inclus).
+/// Histogramme simple du chiffre d'affaires sur 7 jours (jours sans commande inclus),
+/// dessiné par [DailyRevenueChart] (partagé avec les rapports).
 class _WeekChart extends StatelessWidget {
   final List<DailyStat> days;
   const _WeekChart({required this.days});
-
-  static const _weekdays = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 
   @override
   Widget build(BuildContext context) {
@@ -491,57 +539,8 @@ class _WeekChart extends StatelessWidget {
     final series = List.generate(7, (i) {
       final d = DateTime.utc(now.year, now.month, now.day).subtract(Duration(days: 6 - i));
       final key = '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-      return (label: _weekdays[d.weekday - 1], stat: byDay[key]);
+      return byDay[key] ?? DailyStat(key, 0, 0);
     });
-    final maxRevenue = series.fold<int>(0, (m, e) => (e.stat?.revenue ?? 0) > m ? e.stat!.revenue : m);
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
-        child: SizedBox(
-          height: 170,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              for (final e in series)
-                Expanded(
-                  child: Tooltip(
-                    message: '${e.stat?.orders ?? 0} commandes • ${formatPrice(e.stat?.revenue ?? 0)}',
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        Text(
-                          e.stat == null ? '' : '${e.stat!.orders}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0, end: maxRevenue == 0 ? 0 : (e.stat?.revenue ?? 0) / maxRevenue),
-                          duration: const Duration(milliseconds: 900),
-                          curve: Curves.easeOutCubic,
-                          builder: (_, v, _) => Container(
-                          height: 4 + 110 * v,
-                          margin: const EdgeInsets.symmetric(horizontal: 6),
-                          decoration: BoxDecoration(
-                            color: e == series.last ? AppColors.red : AppColors.red.withValues(alpha: 0.35),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                        ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(e.label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return DailyRevenueChart(days: series);
   }
 }

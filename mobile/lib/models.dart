@@ -87,25 +87,181 @@ class DriverLocation {
   }
 }
 
-/// Devis des frais de livraison pour une position (GET /api/delivery/quote).
+String _feeMode(dynamic v) => v == 'distance' || v == 'zone' ? '$v' : 'fixed';
+
+/// Devis des frais de livraison (GET /api/delivery/quote?lat=&lng=&zone_id=).
 class DeliveryQuote {
   final int fee;
   final double? distanceKm; // null si la distance est inconnue (position du restaurant non définie)
-  final String mode; // 'fixed' ou 'distance'
+  final String mode; // 'fixed', 'distance' ou 'zone'
   final bool withinZone;
   final double? maxKm; // null = pas de limite
-  final String? message; // explication si hors zone
+  final String? message; // explication si hors zone / zone à choisir
+  final int? zoneId; // mode 'zone' : zone retenue (choisie ou reconnue d'après la position)
+  final String? zoneName;
 
-  DeliveryQuote({required this.fee, this.distanceKm, this.mode = 'fixed', this.withinZone = true, this.maxKm, this.message});
+  DeliveryQuote({
+    required this.fee,
+    this.distanceKm,
+    this.mode = 'fixed',
+    this.withinZone = true,
+    this.maxKm,
+    this.message,
+    this.zoneId,
+    this.zoneName,
+  });
 
   factory DeliveryQuote.fromJson(Map<String, dynamic> j) => DeliveryQuote(
         fee: _int(j['fee']),
         distanceKm: _double(j['distance_km']),
-        mode: j['mode'] == 'distance' ? 'distance' : 'fixed',
+        mode: _feeMode(j['mode']),
         withinZone: j['within_zone'] != false,
         maxKm: _double(j['max_km']),
         message: j['message'],
+        zoneId: j['zone_id'] == null ? null : _int(j['zone_id']),
+        zoneName: j['zone_name'],
       );
+}
+
+/// Zone de livraison définie par le restaurant (quartier + prix).
+/// GET /api/delivery/zones (actives, public) · /api/admin/delivery-zones (gérant, toutes).
+class DeliveryZone {
+  final int id;
+  final String name;
+  final int fee;
+  final bool active;
+  final int position; // ordre d'affichage
+  /// Reconnaissance automatique (facultative) : cercle centre + rayon.
+  final double? centerLat;
+  final double? centerLng;
+  final double? radiusKm;
+
+  DeliveryZone({
+    required this.id,
+    required this.name,
+    required this.fee,
+    this.active = true,
+    this.position = 0,
+    this.centerLat,
+    this.centerLng,
+    this.radiusKm,
+  });
+
+  bool get hasArea => centerLat != null && centerLng != null && radiusKm != null;
+
+  factory DeliveryZone.fromJson(Map<String, dynamic> j) => DeliveryZone(
+        id: _int(j['id']),
+        name: j['name'] ?? '',
+        fee: _int(j['fee']),
+        active: j['active'] != false && j['active'] != 0,
+        position: _int(j['position']),
+        centerLat: _double(j['center_lat']),
+        centerLng: _double(j['center_lng']),
+        radiusKm: _double(j['radius_km']),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'fee': fee,
+        'active': active,
+        'position': position,
+        'center_lat': centerLat,
+        'center_lng': centerLng,
+        'radius_km': radiusKm,
+      };
+}
+
+/// Ligne d'un rapport (répartition) : canal, mode, moyen de paiement...
+class ReportBucket {
+  final String key; // ex. 'app' / 'counter', 'delivery' / 'pickup' / 'dine_in', 'cash' / 'flooz' / 'mixx'
+  final int orders;
+  final int revenue;
+  final int fees; // commission de l'agrégateur (paiements), sinon 0
+
+  ReportBucket({required this.key, this.orders = 0, this.revenue = 0, this.fees = 0});
+
+  factory ReportBucket.fromJson(Map<String, dynamic> j, String keyField) => ReportBucket(
+        key: '${j[keyField] ?? ''}',
+        orders: _int(j['orders']),
+        revenue: _int(j['revenue']),
+        fees: _int(j['fees']),
+      );
+}
+
+/// Statistiques d'un livreur sur la période.
+class DriverReport {
+  final int driverId;
+  final String name;
+  final int deliveries;
+  final int cashCollected; // espèces encaissées
+  final double? avgMinutes; // durée moyenne prise → livraison faite
+
+  DriverReport({required this.driverId, required this.name, this.deliveries = 0, this.cashCollected = 0, this.avgMinutes});
+
+  factory DriverReport.fromJson(Map<String, dynamic> j) => DriverReport(
+        driverId: _int(j['driver_id']),
+        name: j['name'] ?? '',
+        deliveries: _int(j['deliveries']),
+        cashCollected: _int(j['cash_collected']),
+        avgMinutes: _double(j['avg_minutes']),
+      );
+}
+
+/// Rapport des ventes sur une période (GET /api/admin/reports?from=YYYY-MM-DD&to=YYYY-MM-DD, gérant).
+class SalesReport {
+  final String from; // YYYY-MM-DD inclus
+  final String to; // YYYY-MM-DD inclus
+  final int orders; // commandes comptées (hors annulées et non payées)
+  final int revenue;
+  final int avgBasket;
+  final int cancelled;
+  final int paymentFees; // commissions de l'agrégateur sur la période
+  final List<ReportBucket> byChannel; // key 'app' | 'counter'
+  final List<ReportBucket> byMode; // key 'delivery' | 'pickup' | 'dine_in'
+  final List<ReportBucket> byPayment; // key 'cash' | 'flooz' | 'mixx'
+  final List<DriverReport> byDriver;
+  final List<DailyStat> daily;
+  final List<TopProduct> topProducts;
+
+  SalesReport({
+    required this.from,
+    required this.to,
+    this.orders = 0,
+    this.revenue = 0,
+    this.avgBasket = 0,
+    this.cancelled = 0,
+    this.paymentFees = 0,
+    this.byChannel = const [],
+    this.byMode = const [],
+    this.byPayment = const [],
+    this.byDriver = const [],
+    this.daily = const [],
+    this.topProducts = const [],
+  });
+
+  static List<ReportBucket> _buckets(dynamic raw, String keyField) =>
+      ((raw as List?) ?? []).map((e) => ReportBucket.fromJson(Map<String, dynamic>.from(e), keyField)).toList();
+
+  factory SalesReport.fromJson(Map<String, dynamic> j) {
+    final t = (j['totals'] as Map?) ?? {};
+    return SalesReport(
+      from: j['from'] ?? '',
+      to: j['to'] ?? '',
+      orders: _int(t['orders']),
+      revenue: _int(t['revenue']),
+      avgBasket: _int(t['avg_basket']),
+      cancelled: _int(t['cancelled']),
+      paymentFees: _int(t['payment_fees']),
+      byChannel: _buckets(j['by_channel'], 'channel'),
+      byMode: _buckets(j['by_mode'], 'mode'),
+      byPayment: _buckets(j['by_payment'], 'method'),
+      byDriver: ((j['by_driver'] as List?) ?? []).map((e) => DriverReport.fromJson(Map<String, dynamic>.from(e))).toList(),
+      daily: ((j['daily'] as List?) ?? []).map((e) => DailyStat(e['day'] ?? '', _int(e['orders']), _int(e['revenue']))).toList(),
+      topProducts: ((j['top_products'] as List?) ?? [])
+          .map((e) => TopProduct(e['name'] ?? '', _int(e['quantity']), _int(e['revenue'])))
+          .toList(),
+    );
+  }
 }
 
 /// Membre du personnel (vue gérant : GET /api/admin/staff).
@@ -349,6 +505,13 @@ class Order {
   final int? etaMinutes;
   /// Distance restaurant → client estimée par le serveur (km), utilisée pour les frais au kilomètre.
   final double? deliveryDistanceKm;
+  /// Origine : 'app' (commande du client) ou 'counter' (vente au comptoir saisie par le personnel).
+  final String source;
+  /// Vente au comptoir consommée sur place (mode 'pickup' + dineIn) ; sinon à emporter.
+  final bool dineIn;
+  /// Zone de livraison retenue (mode de frais 'zone').
+  final int? deliveryZoneId;
+  final String? deliveryZoneName;
 
   Order({
     required this.id,
@@ -382,7 +545,14 @@ class Order {
     this.driverLocation,
     this.etaMinutes,
     this.deliveryDistanceKm,
+    this.source = 'app',
+    this.dineIn = false,
+    this.deliveryZoneId,
+    this.deliveryZoneName,
   });
+
+  /// Vente saisie au comptoir (caisse).
+  bool get isCounter => source == 'counter';
 
   /// Le client peut suivre le livreur en direct sur la carte.
   bool get isTrackable => status == 'delivering' && driverDeliveredAt == null && driverLocation != null;
@@ -434,6 +604,10 @@ class Order {
         driverLocation: DriverLocation.fromJson(j['driver_location']),
         etaMinutes: j['eta_minutes'] == null ? null : _int(j['eta_minutes']),
         deliveryDistanceKm: _double(j['delivery_distance_km']),
+        source: j['source'] == 'counter' ? 'counter' : 'app',
+        dineIn: j['dine_in'] == true || j['dine_in'] == 1,
+        deliveryZoneId: j['delivery_zone_id'] == null ? null : _int(j['delivery_zone_id']),
+        deliveryZoneName: j['delivery_zone_name'],
       );
 }
 
@@ -504,6 +678,8 @@ class AppSettings {
   final int deliveryFeePerKm;
   final double deliveryFreeKm;
   final double deliveryMaxKm; // 0 = pas de limite
+  /// Qui paie la commission de l'agrégateur : 'restaurant' (défaut : le client paie le prix affiché) ou 'client'.
+  final String paymentFeesPaidBy;
 
   AppSettings({
     required this.deliveryFee,
@@ -534,6 +710,7 @@ class AppSettings {
     this.deliveryFeePerKm = 0,
     this.deliveryFreeKm = 0,
     this.deliveryMaxKm = 0,
+    this.paymentFeesPaidBy = 'restaurant',
   })  : paymentFeePercentByOperator =
             paymentFeePercentByOperator ?? {'flooz': paymentFeePercent, 'mixx': paymentFeePercent},
         manualOpen = manualOpen ?? isOpen,
@@ -559,6 +736,15 @@ class AppSettings {
 
   /// Frais au kilomètre actifs.
   bool get feeByDistance => deliveryFeeMode == 'distance';
+
+  /// Frais de livraison selon la zone choisie par le client.
+  bool get feeByZone => deliveryFeeMode == 'zone';
+
+  /// Le client paie la commission mobile money en plus du prix (sinon le restaurant l'absorbe).
+  bool get clientPaysFees => paymentFeesPaidBy == 'client';
+
+  /// Taux des frais (en %) FACTURÉS AU CLIENT : 0 quand le restaurant absorbe la commission.
+  double clientFeePercentFor(String method) => clientPaysFees ? feePercentFor(method) : 0;
 
   /// Frais fixés par l'agrégateur : le réglage admin ne s'applique pas.
   bool get feesFromAggregator => paymentFeeSource == 'aggregator';
@@ -601,7 +787,8 @@ class AppSettings {
       openingHours: _parseHours(j['opening_hours']),
       nextOpeningAt: _parseIso(j['next_opening_at']),
       nextClosingAt: _parseIso(j['next_closing_at']),
-      deliveryFeeMode: j['delivery_fee_mode'] == 'distance' ? 'distance' : 'fixed',
+      deliveryFeeMode: _feeMode(j['delivery_fee_mode']),
+      paymentFeesPaidBy: j['payment_fees_paid_by'] == 'client' ? 'client' : 'restaurant',
       deliveryFeePerKm: _int(j['delivery_fee_per_km']),
       deliveryFreeKm: _double(j['delivery_free_km']) ?? 0,
       deliveryMaxKm: _double(j['delivery_max_km']) ?? 0,
@@ -616,6 +803,7 @@ class AppSettings {
         'hours_enabled': hoursEnabled,
         'opening_hours': openingHours,
         'delivery_fee_mode': deliveryFeeMode,
+        'payment_fees_paid_by': paymentFeesPaidBy,
         'delivery_fee_per_km': deliveryFeePerKm,
         'delivery_free_km': deliveryFreeKm,
         'delivery_max_km': deliveryMaxKm,

@@ -17,11 +17,13 @@ import '../client/profile_screen.dart';
 import '../legal/legal_screen.dart' show appVersion;
 import 'admin_layout.dart';
 import 'collections_screen.dart';
+import 'delivery_zones_screen.dart';
 import 'drivers_screen.dart';
 import 'error_logs_screen.dart';
 import 'opening_hours_editor.dart';
 import 'password_resets_screen.dart';
 import 'payments_review_screen.dart';
+import 'reports_screen.dart';
 import 'staff_screen.dart';
 
 class AdminMoreScreen extends StatefulWidget {
@@ -151,6 +153,13 @@ class _AdminMoreScreenState extends State<AdminMoreScreen> {
                   onTap: () => open(const PaymentsReviewScreen()),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.insights_rounded, color: AppColors.red),
+                  title: const Text('Rapports'),
+                  subtitle: const Text('Ventes par période, livreurs, top des plats, export Excel'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => open(const ReportsScreen()),
+                ),
+                ListTile(
                   leading: const Icon(Icons.account_balance_wallet_rounded, color: AppColors.red),
                   title: const Text('Encaissements'),
                   subtitle: const Text('Totaux, frais, reversements, export CSV'),
@@ -239,8 +248,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Horaires d'ouverture automatiques.
   bool _hoursEnabled = false;
   Map<String, List<List<String>>> _hours = defaultOpeningHours();
-  // Frais de livraison : 'fixed' ou 'distance' (base = _fee).
+  // Frais de livraison : 'fixed', 'distance' (base = _fee) ou 'zone' (prix de chaque zone).
   String _feeMode = 'fixed';
+  // Zones de livraison (mode 'zone') ; null tant qu'elles ne sont pas chargées.
+  List<DeliveryZone>? _zones;
+  // Commission Flooz / Mixx : 'restaurant' (absorbée) ou 'client' (ajoutée au prix).
+  String _feesPaidBy = 'restaurant';
   final _perKm = TextEditingController();
   final _freeKm = TextEditingController();
   final _maxKm = TextEditingController();
@@ -264,8 +277,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  /// Zones de livraison (compteur et avertissement du mode « Par zone »).
+  Future<void> _loadZones() async {
+    try {
+      final zones = await fetchDeliveryZones();
+      if (mounted) setState(() => _zones = zones);
+    } catch (_) {
+      // Serveur sans zones ou hors ligne : compteur masqué.
+    }
+  }
+
+  Future<void> _openZones() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => DeliveryZonesScreen(restaurantLat: _lat, restaurantLng: _lng)),
+    );
+    if (mounted) _loadZones();
+  }
+
   Future<void> _load() async {
     _loadAutoConfirm();
+    _loadZones();
     try {
       final s = await Api.instance.settings();
       if (!mounted) return;
@@ -286,6 +318,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
               };
         _feeMode = s.deliveryFeeMode;
+        _feesPaidBy = s.paymentFeesPaidBy;
         _perKm.text = '${s.deliveryFeePerKm}';
         _freeKm.text = _km(s.deliveryFreeKm);
         _maxKm.text = _km(s.deliveryMaxKm);
@@ -330,6 +363,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
       }
     }
+    // Mode « Par zone » sans zone active : les livraisons seraient refusées.
+    final zones = _zones;
+    if (_feeMode == 'zone' && zones != null && !zones.any((z) => z.active)) {
+      final ok = await confirmDialog(
+        context,
+        'Aucune zone active',
+        'En mode « Par zone », les clients ne pourront pas commander en livraison tant qu\'aucune zone '
+            'n\'est active. Enregistrer quand même ?',
+        confirm: 'Enregistrer',
+      );
+      if (!ok || !mounted) return;
+    }
     setState(() => _saving = true);
     // Frais fixés par l'agrégateur : champ en lecture seule, valeur chargée renvoyée telle quelle
     // (AppSettings.toJson ne l'envoie pas au serveur dans ce cas).
@@ -340,12 +385,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // Champs non modifiés ici : copyWith renvoie les valeurs chargées pour ne pas les écraser
       // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
       await Api.instance.saveSettings(current.copyWith(
-        deliveryFee: int.parse(_fee.text.trim()),
+        // Champ masqué en mode « Par zone » : valeur chargée si la saisie est invalide.
+        deliveryFee: int.tryParse(_fee.text.trim()) ?? current.deliveryFee,
         minOrder: int.parse(_min.text.trim()),
         manualOpen: _manualOpen,
         hoursEnabled: _hoursEnabled,
         openingHours: _sortedHours(),
         deliveryFeeMode: _feeMode,
+        paymentFeesPaidBy: _feesPaidBy,
         // Champs « distance » masqués en prix fixe : valeurs chargées renvoyées telles quelles.
         deliveryFeePerKm: int.tryParse(_perKm.text.trim()) ?? current.deliveryFeePerKm,
         deliveryFreeKm: _parseKm(_freeKm.text) ?? current.deliveryFreeKm,
@@ -566,21 +613,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return '${frenchWeekday(d.weekday)} à $time';
   }
 
-  /// Frais de livraison : prix fixe ou selon la distance (base + prix par km au-delà des km inclus).
+  /// Mode « Par zone » : nombre de zones, bouton de gestion, avertissement sans zone active.
+  Widget _zonesCard() {
+    final scheme = Theme.of(context).colorScheme;
+    final zones = _zones;
+    final active = zones?.where((z) => z.active).length ?? 0;
+    final noneActive = zones != null && active == 0;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: noneActive ? AppColors.red.withValues(alpha: 0.08) : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: noneActive ? Border.all(color: AppColors.red.withValues(alpha: 0.35)) : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Le client choisit son quartier (ou il est reconnu par sa position) et paie le prix de la zone.',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+          ),
+          if (noneActive) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: AppColors.red, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Aucune zone active : les commandes en livraison seront refusées.',
+                    style: TextStyle(fontWeight: FontWeight.w800, color: scheme.onSurface),
+                  ),
+                ),
+              ],
+            ),
+          ] else if (zones != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              '$active zone${active > 1 ? 's' : ''} active${active > 1 ? 's' : ''} sur ${zones.length}',
+              style: TextStyle(fontWeight: FontWeight.w700, color: scheme.onSurface),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.tonalIcon(
+              onPressed: _openZones,
+              icon: const Icon(Icons.map_rounded),
+              label: Text(zones == null ? 'Gérer les zones' : 'Gérer les zones (${zones.length})'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Frais de livraison : prix fixe, selon la distance (base + prix par km au-delà des km inclus) ou par zone.
   List<Widget> _deliveryFeeFields() {
     final scheme = Theme.of(context).colorScheme;
     final byDistance = _feeMode == 'distance';
     void refresh(String _) => setState(() {});
     return [
       SegmentedButton<String>(
+        showSelectedIcon: false,
         segments: const [
-          ButtonSegment(value: 'fixed', label: Text('Prix fixe'), icon: Icon(Icons.payments_outlined)),
-          ButtonSegment(value: 'distance', label: Text('Selon la distance'), icon: Icon(Icons.route_rounded)),
+          ButtonSegment(value: 'fixed', label: Text('Prix fixe', textAlign: TextAlign.center)),
+          ButtonSegment(value: 'distance', label: Text('Selon la distance', textAlign: TextAlign.center)),
+          ButtonSegment(value: 'zone', label: Text('Par zone', textAlign: TextAlign.center)),
         ],
         selected: {_feeMode},
         onSelectionChanged: (v) => setState(() => _feeMode = v.first),
       ),
       const SizedBox(height: 14),
+      if (_feeMode == 'zone')
+        _zonesCard()
+      else
       TextFormField(
         controller: _fee,
         keyboardType: TextInputType.number,
@@ -797,6 +905,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Text('Paiement mobile money', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
                   _paymentFeeField(),
+                  const SizedBox(height: 16),
+                  _feesPaidBySection(),
                   const SizedBox(height: 14),
                   TextFormField(
                     controller: _cancelMinutes,
@@ -828,6 +938,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ---------- Commission Flooz / Mixx : absorbée par le restaurant ou ajoutée au prix ----------
+
+  /// Taux Flooz affiché dans l'exemple : celui de l'agrégateur, sinon la saisie en cours.
+  double get _examplePercent {
+    final s = _current;
+    if (s == null) return 0;
+    if (s.feesFromAggregator) return s.feePercentFor('flooz');
+    return _parsePercent(_paymentFee.text) ?? s.feePercentFor('flooz');
+  }
+
+  Widget _feesPaidBySection() {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final selectedColor = theme.brightness == Brightness.dark ? scheme.primary : AppColors.red;
+
+    Widget option(String value, String title, String subtitle) {
+      final selected = _feesPaidBy == value;
+      return Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: selected ? selectedColor : scheme.outlineVariant, width: selected ? 2 : 1),
+        ),
+        child: ListTile(
+          onTap: () => setState(() => _feesPaidBy = value),
+          leading: Icon(
+            selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
+            color: selected ? selectedColor : scheme.onSurfaceVariant,
+          ),
+          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+          subtitle: Text(subtitle),
+        ),
+      );
+    }
+
+    const amount = 21000;
+    final p = _examplePercent;
+    final restaurantReceives = amount - providerFeeOn(amount, p);
+    final clientPays = paymentGrossFor(amount, p);
+    final restaurantPays = _feesPaidBy != 'client';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Commission Flooz / Mixx', style: TextStyle(fontWeight: FontWeight.w900)),
+        const SizedBox(height: 4),
+        Text(
+          "L'agrégateur prélève une commission sur chaque paiement mobile money. Choisissez qui la paie.",
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+        ),
+        const SizedBox(height: 10),
+        option(
+          'restaurant',
+          'Payée par le restaurant',
+          'Le client paie le prix affiché ; la commission est déduite de ce que reçoit le restaurant.',
+        ),
+        option(
+          'client',
+          'Ajoutée au prix payé par le client',
+          'Le client paie la commission en plus ; le restaurant reçoit le montant de la commande + livraison.',
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.calculate_outlined, size: 18, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  restaurantPays
+                      ? 'Exemple : commande de ${formatPrice(amount)} payée en Flooz (${formatPercent(p)} %) → '
+                          'le client paie ${formatPrice(amount)}, le restaurant reçoit ${formatPrice(restaurantReceives)}.'
+                      : 'Exemple : commande de ${formatPrice(amount)} payée en Flooz (${formatPercent(p)} %) → '
+                          'le client paie ${formatPrice(clientPays)}, le restaurant reçoit ${formatPrice(amount)}.',
+                  style: TextStyle(color: scheme.onSurface, fontFeatures: const [FontFeature.tabularFigures()]),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   /// Frais de paiement : modifiables (réglage admin) ou informatifs s'ils sont fixés par l'agrégateur.
   Widget _paymentFeeField() {
     final s = _current;
@@ -852,8 +1049,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 4),
                   Text(
                     "Fixés par l'agrégateur : Flooz ${formatPercent(s.feePercentFor('flooz'))} %, "
-                    "Mixx ${formatPercent(s.feePercentFor('mixx'))} %. Payés par le client : le restaurant "
-                    'reçoit le montant de la commande + livraison.',
+                    "Mixx ${formatPercent(s.feePercentFor('mixx'))} %. Qui les paie : voir ci-dessous.",
                     style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13, height: 1.3),
                   ),
                 ],
@@ -866,8 +1062,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return TextFormField(
       controller: _paymentFee,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      onChanged: (_) => setState(() {}), // exemple chiffré en direct
       decoration: const InputDecoration(
-        labelText: 'Frais de paiement mobile money (payés par le client)',
+        labelText: 'Commission mobile money (taux)',
         helperText: "Entre 0 et 10 %. À remplacer par la commission de l'agrégateur dès qu'elle est configurée.",
         helperMaxLines: 2,
         suffixText: '%',

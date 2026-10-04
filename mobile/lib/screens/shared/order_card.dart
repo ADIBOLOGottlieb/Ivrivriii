@@ -36,19 +36,28 @@ class OrderCard extends StatelessWidget {
                 children: [
                   Text('n°${order.id}', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
                   const SizedBox(width: 8),
-                  Icon(
-                    order.isDelivery ? Icons.delivery_dining_rounded : Icons.storefront_rounded,
-                    size: 18,
-                    color: AppColors.muted,
+                  Icon(orderModeIcon(order), size: 18, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    // « Comptoir · Sur place », « Livraison · Tokoin », « À emporter ».
+                    child: Text(
+                      orderModeLabel(order),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                  const Spacer(),
+                  const SizedBox(width: 6),
                   StatusChip(status: order.status, delivery: order.isDelivery),
                 ],
               ),
               if (showCustomer) ...[
                 const SizedBox(height: 6),
-                Text('${order.customerName} • ${order.phone}',
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text(_customerLine(), style: const TextStyle(fontWeight: FontWeight.w600)),
               ],
               const SizedBox(height: 6),
               Text(summary,
@@ -88,6 +97,13 @@ class OrderCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// « Nom • téléphone » ; vente comptoir anonyme : « Comptoir » seul (le numéro est celui du restaurant).
+  String _customerLine() {
+    final name = order.customerName.trim().isEmpty ? 'Client' : order.customerName.trim();
+    if (order.isCounter && (name == 'Comptoir' || order.phone.isEmpty)) return name;
+    return '$name • ${order.phone}';
   }
 
   /// Petite pastille (livreur, réception à confirmer), lisible en clair et en sombre.
