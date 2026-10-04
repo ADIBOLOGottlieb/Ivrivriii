@@ -442,7 +442,21 @@ class _KitchenCard extends StatelessWidget {
                           style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: scheme.primary)),
                     ),
                     Expanded(
-                      child: Text(item.name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(item.name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                          // Pack : la cuisine voit chaque plat à préparer, un par ligne.
+                          if (item.details != null && item.details!.isNotEmpty)
+                            for (final part in item.details!.split(RegExp(r', (?=\d+× )')))
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2, left: 4),
+                                child: Text('• $part',
+                                    style: TextStyle(
+                                        fontSize: 18, fontWeight: FontWeight.w600, color: scheme.onSurface)),
+                              ),
+                        ],
+                      ),
                     ),
                   ],
                 ),

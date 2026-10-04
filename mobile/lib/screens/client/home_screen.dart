@@ -645,6 +645,13 @@ class _PopularCard extends StatelessWidget {
               Stack(
                 children: [
                   Hero(tag: tag, child: ProductImage(url: product.imageUrl, height: 124, width: 172)),
+                  if (product.isPack)
+                    Positioned(
+                      left: 8,
+                      top: 8,
+                      right: 8,
+                      child: PackBadge(savings: product.savings, small: true),
+                    ),
                   Positioned(
                     right: 8,
                     bottom: 8,
@@ -659,10 +666,15 @@ class _PopularCard extends StatelessWidget {
                   children: [
                     Text(
                       product.name,
-                      maxLines: 2,
+                      // Pack : une ligne pour le nom, une pour son contenu (hauteur de carte fixe).
+                      maxLines: product.isPack ? 1 : 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w700, height: 1.25, fontSize: 13.5),
                     ),
+                    if (product.isPack) ...[
+                      const SizedBox(height: 2),
+                      ItemDetailsText(product.packSummary, maxLines: 1, fontSize: 11),
+                    ],
                     const SizedBox(height: 6),
                     Price(product.price, size: 14),
                   ],
@@ -705,7 +717,12 @@ class _ProductTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(product.name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                    if (product.description != null) ...[
+                    if (product.isPack) ...[
+                      const SizedBox(height: 4),
+                      PackBadge(savings: product.savings, small: true),
+                      const SizedBox(height: 4),
+                      ItemDetailsText(product.packSummary),
+                    ] else if (product.description != null) ...[
                       const SizedBox(height: 3),
                       Text(
                         product.description!,

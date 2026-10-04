@@ -123,7 +123,9 @@ class CartProvider extends ChangeNotifier {
       if (fresh.price != line.product.price) repriced++;
       if (fresh.price != line.product.price ||
           fresh.name != line.product.name ||
-          fresh.imageUrl != line.product.imageUrl) {
+          fresh.imageUrl != line.product.imageUrl ||
+          // Pack : contenu à jour (le panier enregistré ne garde pas les noms des plats).
+          fresh.packSummary != line.product.packSummary) {
         _lines[id] = CartLine(fresh, line.quantity);
         changed = true;
       }

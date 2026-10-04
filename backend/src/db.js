@@ -191,6 +191,9 @@ addColumn('orders', 'payment_token', 'TEXT');
 addColumn('orders', 'paid_at', 'TEXT');
 // Taux des frais mobile money figé à la création (commission de l'agrégateur ou réglage admin).
 addColumn('orders', 'payment_fee_percent', 'REAL');
+// Packs de menu : contenu d'un pack (JSON [{product_id, quantity}]) et détail figé sur la ligne de commande.
+addColumn('products', 'pack_items', 'TEXT');
+addColumn('order_items', 'details', 'TEXT');
 // Distance estimée restaurant → client (km, 1 décimale) calculée à la création de la commande.
 addColumn('orders', 'delivery_distance_km', 'REAL');
 // Niveau du personnel (role 'admin') : 'manager' (gérant) ou 'kitchen' (cuisine) ; NULL = gérant.

@@ -408,6 +408,27 @@ class Category {
   Map<String, dynamic> toJson() => {'name': name, 'icon': icon, 'position': position};
 }
 
+/// Plat contenu dans un pack (nom et prix unitaire actuels du catalogue).
+class PackComponent {
+  final int productId;
+  final String name;
+  final int quantity;
+  final int price;
+  final bool available;
+
+  PackComponent({required this.productId, this.name = '', this.quantity = 1, this.price = 0, this.available = true});
+
+  factory PackComponent.fromJson(Map<String, dynamic> j) => PackComponent(
+        productId: _int(j['product_id']),
+        name: j['name'] ?? '',
+        quantity: j['quantity'] == null ? 1 : _int(j['quantity']),
+        price: _int(j['price']),
+        available: j['available'] != false,
+      );
+
+  Map<String, dynamic> toJson() => {'product_id': productId, 'quantity': quantity};
+}
+
 class Product {
   final int id;
   final int? categoryId;
@@ -415,8 +436,16 @@ class Product {
   final String? description;
   final int price;
   final String? imageUrl;
+  /// Disponible à la commande (pack : interrupteur de l'admin ET tous ses plats disponibles).
   final bool available;
   final bool popular;
+  /// Pack de menu : plats inclus (vide pour un plat simple).
+  final List<PackComponent> packItems;
+  /// Pack : somme des prix des plats inclus, et économie pour le client (packValue − price).
+  final int? packValue;
+  final int savings;
+  /// Pack : interrupteur « disponible » de l'admin (sans tenir compte des plats), à renvoyer à l'enregistrement.
+  final bool? availableRaw;
 
   Product({
     required this.id,
@@ -427,7 +456,19 @@ class Product {
     this.imageUrl,
     this.available = true,
     this.popular = false,
+    this.packItems = const [],
+    this.packValue,
+    this.savings = 0,
+    this.availableRaw,
   });
+
+  bool get isPack => packItems.isNotEmpty;
+
+  /// Pack masqué / non commandable parce qu'un de ses plats est épuisé.
+  bool get packBlockedByComponent => isPack && (availableRaw ?? available) && !available;
+
+  /// « 1× Demi-poulet braisé, 1× Alloco, 1× Bissap »
+  String get packSummary => packItems.map((c) => '${c.quantity}× ${c.name}').join(', ');
 
   factory Product.fromJson(Map<String, dynamic> j) => Product(
         id: _int(j['id']),
@@ -438,6 +479,13 @@ class Product {
         imageUrl: j['image_url'],
         available: j['available'] == true || j['available'] == 1,
         popular: j['popular'] == true || j['popular'] == 1,
+        packItems: ((j['pack_items'] as List?) ?? [])
+            .whereType<Map>()
+            .map((e) => PackComponent.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+        packValue: j['pack_value'] == null ? null : _int(j['pack_value']),
+        savings: _int(j['savings']),
+        availableRaw: j['available_raw'] == null ? null : j['available_raw'] == true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -446,8 +494,10 @@ class Product {
         'description': description,
         'price': price,
         'image_url': imageUrl,
-        'available': available,
+        // Pack : on renvoie l'interrupteur de l'admin, pas la disponibilité calculée.
+        'available': availableRaw ?? available,
         'popular': popular,
+        'pack_items': packItems.map((c) => c.toJson()).toList(),
       };
 }
 
@@ -456,8 +506,10 @@ class OrderItem {
   final String name;
   final int unitPrice;
   final int quantity;
+  /// Pack : contenu figé à la commande (« 1× Demi-poulet braisé, 1× Alloco »), sinon null.
+  final String? details;
 
-  OrderItem({this.productId, required this.name, required this.unitPrice, required this.quantity});
+  OrderItem({this.productId, required this.name, required this.unitPrice, required this.quantity, this.details});
 
   int get total => unitPrice * quantity;
 
@@ -466,6 +518,7 @@ class OrderItem {
         name: j['name'] ?? '',
         unitPrice: _int(j['unit_price']),
         quantity: _int(j['quantity']),
+        details: j['details'],
       );
 }
 

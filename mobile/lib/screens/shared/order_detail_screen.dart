@@ -759,6 +759,7 @@ class _ItemsCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -770,7 +771,17 @@ class _ItemsCard extends StatelessWidget {
                           style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red)),
                     ),
                     const SizedBox(width: 10),
-                    Expanded(child: Text(i.name)),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(i.name),
+                          // Pack : contenu figé à la commande.
+                          if (i.details != null && i.details!.isNotEmpty)
+                            ItemDetailsText(i.details!, maxLines: null),
+                        ],
+                      ),
+                    ),
                     Text(formatPrice(i.total)),
                   ],
                 ),

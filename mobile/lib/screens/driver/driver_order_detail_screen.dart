@@ -258,10 +258,21 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 6),
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('${it.quantity} ×', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
                           const SizedBox(width: 10),
-                          Expanded(child: Text(it.name, style: const TextStyle(fontSize: 16))),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(it.name, style: const TextStyle(fontSize: 16)),
+                                // Pack : contenu, pour vérifier le sac avant de partir.
+                                if (it.details != null && it.details!.isNotEmpty)
+                                  ItemDetailsText(it.details!, maxLines: null, fontSize: 13),
+                              ],
+                            ),
+                          ),
                           Text(formatPrice(it.total), style: TextStyle(color: cs.onSurfaceVariant)),
                         ],
                       ),

@@ -12,6 +12,7 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 **Client**
 - Inscription et connexion par numéro de téléphone
 - Menu par catégories, recherche toujours visible, section « Les plus demandés »
+- **Packs de menu** (catégorie « Packs ») : plusieurs plats à un prix réduit, contenu et économie affichés ; un pack disparaît si un de ses plats est épuisé
 - Panier (jusqu'à 999 par article, appui long sur la quantité pour la saisir), total estimé avec livraison et frais mobile money
 - Livraison : position sur la carte (recherche d'adresse, « Ma position », adresse retrouvée automatiquement) ou adresses enregistrées
 - Frais de livraison fixes, **selon la distance** (devis affiché avant de commander, zone maximale) ou **par zone / quartier** (zone choisie ou reconnue d'après la position)
@@ -256,7 +257,7 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 | GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
 | GET | `/api/admin/stats` (dont `by_channel_today`), `/api/admin/orders?status=&source=` (app ou counter), `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
 | PATCH | `/api/admin/orders/:id/status` (pas de cuisine avant paiement mobile money) | admin |
-| POST/PUT/DELETE | `/api/admin/products[/:id]`, `/api/admin/categories[/:id]` · POST `/api/admin/upload` · PUT `/api/admin/settings` | admin |
+| POST/PUT/DELETE | `/api/admin/products[/:id]` (`pack_items: [{product_id, quantity}]` pour un pack), `/api/admin/categories[/:id]` · POST `/api/admin/upload` · PUT `/api/admin/settings` | admin |
 | POST | `/api/payments/paygate/webhook`, `/api/payments/kadev/webhook` | prestataires |
 
 « admin » = tout le personnel ; « gérant » = niveau Gérant seulement. Réservés au gérant : statistiques, rapports, zones de livraison, réglages, menu (création/modification), clients, paiements, encaissements, remboursements, surveillance, audit, mots de passe oubliés, personnel, erreurs.

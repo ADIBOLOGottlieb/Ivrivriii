@@ -9,6 +9,17 @@ const CATEGORIES = [
   { name: 'Accompagnements', icon: 'fries' },
   { name: 'Boissons', icon: 'drink' },
   { name: 'Desserts', icon: 'dessert' },
+  { name: 'Packs', icon: 'pack' },
+];
+
+// Packs de démonstration : [nom, description, prix FCFA, populaire, image, [[nom du plat, quantité], ...]]
+const PACKS = [
+  ['Pack Solo', 'Le repas complet pour une personne', 4900, 1, 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?w=800',
+    [['Demi-poulet braisé', 1], ['Alloco', 1], ['Bissap', 1]]],
+  ['Pack Duo', 'Pour deux : burgers, frites et boissons', 8500, 0, 'https://images.unsplash.com/photo-1606755962773-d324e0a13086?w=800',
+    [['Chicken Burger', 2], ['Frites maison', 2], ['Coca-Cola', 2]]],
+  ['Pack Famille', 'Poulet entier et accompagnements pour 4', 12000, 1, 'https://images.unsplash.com/photo-1598103442097-8b74394b95c6?w=800',
+    [['Poulet braisé entier', 1], ['Alloco', 2], ['Frites maison', 2], ['Bissap', 4]]],
 ];
 
 // [category index, name, description, price FCFA, popular, image]
@@ -77,6 +88,16 @@ function seedIfEmpty() {
       );
       for (const [cat, name, desc, price, popular, img] of PRODUCTS) {
         insertProduct.run(ids[cat], name, desc, price, popular, img);
+      }
+      const idOf = (name) => db.prepare('SELECT id FROM products WHERE name = ?').get(name).id;
+      const insertPack = db.prepare(
+        `INSERT INTO products (category_id, name, description, price, popular, image_url, pack_items)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const packsCat = ids[CATEGORIES.findIndex((c) => c.name === 'Packs')];
+      for (const [name, desc, price, popular, img, items] of PACKS) {
+        const content = items.map(([product, quantity]) => ({ product_id: Number(idOf(product)), quantity }));
+        insertPack.run(packsCat, name, desc, price, popular, img, JSON.stringify(content));
       }
     });
     console.log('🍗 Menu de démonstration ajouté');

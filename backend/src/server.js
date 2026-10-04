@@ -16,6 +16,7 @@ const delivery = require('./delivery');
 const { ORDER_STATUSES, adminTransitionError } = require('./order-status');
 const notify = require('./notify');
 const { computeDeliveryFee } = require('./delivery-fee');
+const packs = require('./packs');
 const hours = require('./hours');
 const { createGeoRouter } = require('./geo');
 const { createErrorRouter } = require('./error-log');
@@ -60,6 +61,7 @@ function accountSettings(req) {
 }
 
 seedIfEmpty();
+packs.ensurePacksCategory();
 
 const app = express();
 // TRUST_PROXY=1 (nombre de proxys devant le serveur, ex : Render) ou une liste d'IP / 'loopback'.
@@ -194,9 +196,8 @@ const orderLimiter = rateLimit({
   message: { error: 'Trop de commandes en peu de temps. Patientez quelques minutes.' },
 });
 
-function mapProduct(p) {
-  return { ...p, available: !!p.available, popular: !!p.popular };
-}
+/** Produit au format API (packs : contenu, valeur, économie, disponibilité selon les plats). */
+const mapProduct = (p, byId) => packs.presentProduct(p, byId);
 
 /**
  * Retire le jeton de paiement et ajoute l'URL de paiement pour le propriétaire de la commande,
@@ -346,7 +347,10 @@ app.get('/api/products', h((req, res) => {
   const rows = db
     .prepare(`SELECT * FROM products ${all ? '' : 'WHERE available = 1'} ORDER BY popular DESC, name`)
     .all();
-  res.json(rows.map(mapProduct));
+  const byId = packs.catalogById();
+  const list = rows.map((p) => mapProduct(p, byId));
+  // Catalogue client : un pack dont un plat est épuisé est masqué.
+  res.json(all ? list : list.filter((p) => p.available));
 }));
 
 // ---------- Commandes client ----------
@@ -374,13 +378,14 @@ function priceLines(items) {
     const qty = Number(it?.quantity);
     const p = getProduct.get(Number(it?.product_id));
     if (!p || !p.available) throw httpError(400, `Un article n'est plus disponible`);
+    const details = packs.lineDetails(p); // pack : tous ses plats doivent être disponibles
     if (!Number.isInteger(qty) || qty < 1) throw httpError(400, 'Quantité invalide');
     const totalQty = (perProduct.get(p.id) || 0) + qty;
     if (totalQty > MAX_QUANTITY_PER_ITEM) {
       throw httpError(400, `Quantité maximale : ${MAX_QUANTITY_PER_ITEM} par article (${p.name})`);
     }
     perProduct.set(p.id, totalQty);
-    return { product: p, qty };
+    return { product: p, qty, details };
   });
 }
 
@@ -396,9 +401,11 @@ function insertOrder(fields, lines) {
       .prepare(`INSERT INTO orders (${ORDER_COLUMNS.join(', ')}) VALUES (${ORDER_COLUMNS.map(() => '?').join(', ')})`)
       .run(...ORDER_COLUMNS.map((c) => row[c] ?? null));
     const insertItem = db.prepare(
-      'INSERT INTO order_items (order_id, product_id, name, unit_price, quantity) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO order_items (order_id, product_id, name, unit_price, quantity, details) VALUES (?, ?, ?, ?, ?, ?)',
     );
-    for (const l of lines) insertItem.run(info.lastInsertRowid, l.product.id, l.product.name, l.product.price, l.qty);
+    for (const l of lines) {
+      insertItem.run(info.lastInsertRowid, l.product.id, l.product.name, l.product.price, l.qty, l.details ?? null);
+    }
     return Number(info.lastInsertRowid);
   });
 }
@@ -759,7 +766,8 @@ app.delete('/api/admin/categories/:id', requireManager, h((req, res) => {
   res.status(204).end();
 }));
 
-function productFields(body) {
+/** Champs d'un produit ; pack_items (facultatif) = contenu d'un pack, [] ou null pour un plat simple. */
+function productFields(body, selfId = null) {
   const { price, category_id, available, popular } = body || {};
   const name = optText(body?.name, 'Nom');
   const description = optText(body?.description, 'Description');
@@ -769,14 +777,15 @@ function productFields(body) {
   if (!(p > 0 && p < 10_000_000)) throw httpError(400, 'Prix invalide');
   const cat = category_id ? Number(category_id) : null;
   if (cat !== null && !Number.isInteger(cat)) throw httpError(400, 'Catégorie invalide');
-  return [cat, name, description || null, p, imageUrl || null, available === false ? 0 : 1, popular ? 1 : 0];
+  const packItems = packs.parsePackItems(body?.pack_items, selfId);
+  return [cat, name, description || null, p, imageUrl || null, available === false ? 0 : 1, popular ? 1 : 0, packItems];
 }
 
 app.post('/api/admin/products', requireManager, h((req, res) => {
   const info = db
     .prepare(
-      `INSERT INTO products (category_id, name, description, price, image_url, available, popular)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO products (category_id, name, description, price, image_url, available, popular, pack_items)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(...productFields(req.body));
   audit('product_created', { userId: req.user.id, details: { id: info.lastInsertRowid, name: req.body.name }, ip: req.ip });
@@ -788,9 +797,9 @@ app.put('/api/admin/products/:id', requireManager, h((req, res) => {
   const info = db
     .prepare(
       `UPDATE products SET category_id = ?, name = ?, description = ?, price = ?, image_url = ?,
-       available = ?, popular = ? WHERE id = ?`,
+       available = ?, popular = ?, pack_items = ? WHERE id = ?`,
     )
-    .run(...productFields(req.body), Number(req.params.id));
+    .run(...productFields(req.body, Number(req.params.id)), Number(req.params.id));
   if (info.changes === 0) throw httpError(404, 'Produit introuvable');
   const after = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(req.params.id));
   audit('product_updated', {

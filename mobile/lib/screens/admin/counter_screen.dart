@@ -505,6 +505,8 @@ class _CounterScreenState extends State<CounterScreen> {
                 ),
               ],
             ),
+            if (p.isPack)
+              const Positioned(top: 8, left: 8, child: PackBadge(small: true)),
             if (qty > 0)
               Positioned(
                 top: 8,
@@ -577,6 +579,8 @@ class _CounterScreenState extends State<CounterScreen> {
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontWeight: FontWeight.w700)),
+                          // Pack : contenu à préparer / à remettre au client.
+                          if (byId[e.key]!.isPack) ItemDetailsText(byId[e.key]!.packSummary, maxLines: null),
                           Text(
                             '${formatPrice(byId[e.key]!.price)} · ${formatPrice(byId[e.key]!.price * e.value)}',
                             style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12.5),

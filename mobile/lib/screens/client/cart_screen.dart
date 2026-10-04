@@ -147,6 +147,12 @@ class _CartScreenState extends State<CartScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(line.product.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                                  // Pack : contenu (noms absents tant que le panier enregistré n'est pas resynchronisé).
+                                  if (line.product.isPack && line.product.packItems.every((c) => c.name.isNotEmpty))
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: ItemDetailsText(line.product.packSummary),
+                                    ),
                                   const SizedBox(height: 4),
                                   Text(formatPrice(line.product.price),
                                       style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12.5)),

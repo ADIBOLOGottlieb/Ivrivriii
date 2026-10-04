@@ -407,3 +407,52 @@ class Price extends StatelessWidget {
     return Text(formatPrice(amount), style: TextStyle(fontSize: size, fontWeight: FontWeight.w800, color: c));
   }
 }
+
+/// Pastille « Pack » d'un menu composé ; [savings] > 0 ajoute « −600 F » (économie pour le client).
+class PackBadge extends StatelessWidget {
+  final int savings;
+  final bool small;
+  const PackBadge({super.key, this.savings = 0, this.small = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final fontSize = small ? 10.5 : 12.0;
+    final pad = EdgeInsets.symmetric(horizontal: small ? 7 : 9, vertical: small ? 2 : 3);
+    // Couleurs fixes : fonds jaune / vert identiques en clair et en sombre, texte toujours lisible.
+    Widget pill(String text, Color bg, Color fg) => Container(
+          padding: pad,
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+          child: Text(text, style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w800, color: fg)),
+        );
+    return Wrap(
+      spacing: 5,
+      runSpacing: 4,
+      children: [
+        pill('🍱 Pack', AppColors.yellow, AppColors.ink),
+        if (savings > 0) pill('−${formatPrice(savings)}', AppColors.green, Colors.white),
+      ],
+    );
+  }
+}
+
+/// Contenu d'un pack, en petit sous le nom d'un article (« 1× Demi-poulet braisé, 1× Alloco »).
+class ItemDetailsText extends StatelessWidget {
+  final String text;
+  final int? maxLines;
+  final double fontSize;
+  const ItemDetailsText(this.text, {super.key, this.maxLines = 2, this.fontSize = 12});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      maxLines: maxLines,
+      overflow: maxLines == null ? null : TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: fontSize,
+        height: 1.3,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}

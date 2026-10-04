@@ -715,7 +715,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           children: [
                             Text('${l.quantity}×', style: const TextStyle(fontWeight: FontWeight.w800)),
                             const SizedBox(width: 8),
-                            Expanded(child: Text(l.product.name)),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(l.product.name),
+                                  if (l.product.isPack && l.product.packItems.every((c) => c.name.isNotEmpty))
+                                    ItemDetailsText(l.product.packSummary),
+                                ],
+                              ),
+                            ),
                             Text(formatPrice(l.total)),
                           ],
                         ),

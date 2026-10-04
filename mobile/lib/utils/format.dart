@@ -265,6 +265,7 @@ const categoryIcons = <String, String>{
   'fries': '🍟',
   'drink': '🥤',
   'dessert': '🍰',
+  'pack': '🍱',
   'pizza': '🍕',
   'salad': '🥗',
   'rice': '🍛',

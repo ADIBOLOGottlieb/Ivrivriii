@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -50,7 +52,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
   Future<void> _openProduct([Product? p]) async {
     final changed = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => ProductFormScreen(product: p, categories: _categories)),
+      MaterialPageRoute(builder: (_) => ProductFormScreen(product: p, categories: _categories, products: _products)),
     );
     if (changed == true) _load(fresh: true);
   }
@@ -60,7 +62,16 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
       final updated = await Api.instance.setProductAvailability(p.id, available);
       if (!mounted) return;
       setState(() => _products = _products!.map((x) => x.id == p.id ? updated : x).toList());
-      showMessage(context, available ? '${p.name} est disponible' : '${p.name} est en rupture');
+      showMessage(
+        context,
+        updated.packBlockedByComponent
+            ? '${p.name} est activé, mais un de ses plats est épuisé'
+            : available
+                ? '${p.name} est disponible'
+                : '${p.name} est en rupture',
+      );
+      // La disponibilité d'un plat change celle des packs qui le contiennent.
+      if (!p.isPack && _products!.any((x) => x.isPack)) unawaited(_load(fresh: true));
     } catch (e) {
       if (mounted) showMessage(context, e, error: true);
     }
@@ -180,7 +191,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
                       child: Card(
                         clipBehavior: Clip.antiAlias,
                         child: InkWell(
-                          onTap: editable ? () => _openProduct(p) : () => _toggle(p, !p.available),
+                          onTap: editable ? () => _openProduct(p) : () => _toggle(p, !(p.availableRaw ?? p.available)),
                           child: Padding(
                             padding: const EdgeInsets.all(10),
                             child: Row(
@@ -206,7 +217,19 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(formatPrice(p.price), style: const TextStyle(color: AppColors.red)),
-                                      if (!p.available)
+                                      if (p.isPack) ...[
+                                        const SizedBox(height: 4),
+                                        PackBadge(savings: p.savings, small: true),
+                                        const SizedBox(height: 2),
+                                        ItemDetailsText(p.packSummary, fontSize: 11.5),
+                                      ],
+                                      if (p.packBlockedByComponent)
+                                        Text('Indisponible : un plat est épuisé',
+                                            style: TextStyle(
+                                                color: Theme.of(context).colorScheme.error,
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 12))
+                                      else if (!p.available)
                                         Text('Rupture de stock',
                                             style: TextStyle(
                                                 color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -215,7 +238,8 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
                                   ),
                                 ),
                                 Switch(
-                                  value: p.available,
+                                  // Pack : interrupteur de l'admin, même quand un de ses plats est épuisé.
+                                  value: p.availableRaw ?? p.available,
                                   activeTrackColor: AppColors.green,
                                   onChanged: (v) => _toggle(p, v),
                                 ),

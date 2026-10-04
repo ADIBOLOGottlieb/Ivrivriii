@@ -116,7 +116,48 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                     child: Text(p.name, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, height: 1.2)),
                   ),
                   const SizedBox(height: 8),
-                  FadeSlideIn(delay: const Duration(milliseconds: 120), child: Price(p.price, size: 20)),
+                  FadeSlideIn(
+                    delay: const Duration(milliseconds: 120),
+                    child: p.isPack && p.savings > 0
+                        ? Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 10,
+                            children: [
+                              Price(p.price, size: 20),
+                              // Total des plats achetés séparément, barré.
+                              Text(
+                                formatPrice(p.packValue ?? p.price + p.savings),
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  color: scheme.onSurfaceVariant,
+                                  decoration: TextDecoration.lineThrough,
+                                  decorationColor: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Price(p.price, size: 20),
+                  ),
+                  if (p.isPack) ...[
+                    const SizedBox(height: 10),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 150),
+                      child: Row(
+                        children: [
+                          const PackBadge(),
+                          if (p.savings > 0) ...[
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Vous économisez ${formatPrice(p.savings)}',
+                                style: TextStyle(fontWeight: FontWeight.w800, color: scheme.tertiary),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                   if (p.description != null) ...[
                     const SizedBox(height: 16),
                     FadeSlideIn(
@@ -124,6 +165,44 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                       child: Text(
                         p.description!,
                         style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 15, height: 1.55),
+                      ),
+                    ),
+                  ],
+                  if (p.isPack) ...[
+                    const SizedBox(height: 22),
+                    FadeSlideIn(
+                      delay: const Duration(milliseconds: 210),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text('Ce pack contient',
+                              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 8),
+                          for (final c in p.packItems)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 5),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    constraints: const BoxConstraints(minWidth: 38),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: isDark ? scheme.onSurface.withValues(alpha: 0.08) : AppColors.cream,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text('${c.quantity}×',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(fontWeight: FontWeight.w800, color: scheme.onSurface)),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: Text(c.name, style: const TextStyle(fontSize: 15))),
+                                  if (c.price > 0)
+                                    Text(formatPrice(c.price * c.quantity),
+                                        style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                                ],
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   ],
