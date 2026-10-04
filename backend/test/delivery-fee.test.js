@@ -78,3 +78,41 @@ test('hors zone : within_zone false et message', () => {
   // 0 = illimité.
   assert.equal(computeDeliveryFee({ ...base, delivery_max_km: 0 }, north(100)).within_zone, true);
 });
+
+// ---------- Mode 'zone' ----------
+
+const ZONES = [
+  { id: 1, name: 'Grand Lomé', fee: 1500, active: true, center_lat: RESTO.lat, center_lng: RESTO.lng, radius_km: 5 },
+  { id: 2, name: 'Centre', fee: 700, active: true, center_lat: north(0.5).lat, center_lng: RESTO.lng, radius_km: 1 },
+  { id: 3, name: 'Baguida', fee: 2000, active: true, center_lat: null, center_lng: null, radius_km: null },
+  { id: 4, name: 'Fermée', fee: 100, active: false, center_lat: RESTO.lat, center_lng: RESTO.lng, radius_km: 0.5 },
+];
+const zoneSettings = { ...base, delivery_fee_mode: 'zone' };
+
+test('mode zone : zone choisie, reconnue par la position (plus petit rayon), inactive ignorée', () => {
+  const chosen = computeDeliveryFee(zoneSettings, north(20), ZONES, 3);
+  assert.deepEqual(
+    [chosen.fee, chosen.mode, chosen.zone_id, chosen.zone_name, chosen.within_zone, chosen.message],
+    [2000, 'zone', 3, 'Baguida', true, null],
+  );
+  assert.equal(computeDeliveryFee(zoneSettings, north(0.6), ZONES).zone_id, 2, 'Centre (1 km) dans Grand Lomé (5 km)');
+  assert.equal(computeDeliveryFee(zoneSettings, north(3), ZONES).zone_id, 1);
+  assert.equal(computeDeliveryFee(zoneSettings, north(0.1), ZONES).zone_id, 2, 'zone inactive (0,5 km) ignorée');
+  assert.equal(computeDeliveryFee(zoneSettings, north(3), ZONES, 4).zone_id, 1, 'zone choisie inactive → position');
+  assert.equal(computeDeliveryFee(zoneSettings, north(3), ZONES, '1').fee, 1500, 'identifiant en texte accepté');
+  assert.equal(computeDeliveryFee(zoneSettings, north(3), ZONES).distance_km, 3.9);
+});
+
+test('mode zone : aucune zone → within_zone false, frais 0, message', () => {
+  const none = computeDeliveryFee(zoneSettings, null, ZONES);
+  assert.deepEqual(none, {
+    fee: 0, mode: 'zone', zone_id: null, zone_name: null, within_zone: false, message: 'Choisissez votre zone de livraison',
+    distance_km: null, max_km: null,
+  });
+  assert.equal(computeDeliveryFee(zoneSettings, north(20), ZONES).message, 'Adresse hors des zones de livraison');
+  // Aucune zone avec un cercle : la position ne peut rien reconnaître → choisir.
+  assert.equal(computeDeliveryFee(zoneSettings, north(20), [ZONES[2]]).message, 'Choisissez votre zone de livraison');
+  assert.equal(computeDeliveryFee(zoneSettings, north(1), []).within_zone, false);
+  // Les autres modes ignorent les zones.
+  assert.equal(computeDeliveryFee(base, north(1), ZONES, 3).fee, 1000);
+});

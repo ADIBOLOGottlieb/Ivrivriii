@@ -195,6 +195,29 @@ addColumn('orders', 'payment_fee_percent', 'REAL');
 addColumn('orders', 'delivery_distance_km', 'REAL');
 // Niveau du personnel (role 'admin') : 'manager' (gérant) ou 'kitchen' (cuisine) ; NULL = gérant.
 addColumn('users', 'admin_level', 'TEXT');
+// Ventes au comptoir : origine ('app' | 'counter'), consommation sur place, nom donné par le client.
+addColumn('orders', 'source', "TEXT NOT NULL DEFAULT 'app'");
+addColumn('orders', 'dine_in', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('orders', 'customer_label', 'TEXT');
+// Zone de livraison retenue (mode de frais 'zone') ; le nom est figé sur la commande.
+addColumn('orders', 'delivery_zone_id', 'INTEGER');
+addColumn('orders', 'delivery_zone_name', 'TEXT');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_orders_source ON orders(source, id);
+
+  -- Zones de livraison : prix par quartier, reconnaissance facultative par un cercle (centre + rayon).
+  CREATE TABLE IF NOT EXISTS delivery_zones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    fee INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0,
+    center_lat REAL,
+    center_lng REAL,
+    radius_km REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
 
 db.exec(`
   -- Dernière position d'un livreur, enregistrée seulement pendant une livraison (suivi en direct).
@@ -294,9 +317,12 @@ function getSettings() {
     is_open: (s.is_open ?? '1') === '1',
     restaurant_phone: s.restaurant_phone ?? '+228 97 98 02 79',
     restaurant_address: s.restaurant_address ?? 'Lomé, Togo',
-    // Frais de paiement mobile money reportés sur le client (en %), utilisé seulement sans
+    // Taux des frais de paiement mobile money (en %), utilisé seulement sans
     // commission d'agrégateur en variable d'environnement (voir payments/fees.js).
     payment_fee_percent: Number(s.payment_fee_percent ?? 2),
+    // Qui paie la commission de l'agrégateur : 'restaurant' (défaut, le client paie le prix affiché)
+    // ou 'client' (frais ajoutés au total, voir payments/core.js paymentFeeDetails).
+    payment_fees_paid_by: s.payment_fees_paid_by === 'client' ? 'client' : 'restaurant',
     // Seuils de détection de pic de transactions.
     spike_min_orders: Number(s.spike_min_orders ?? 10),
     spike_factor: Number(s.spike_factor ?? 3),
@@ -308,8 +334,9 @@ function getSettings() {
     restaurant_lng: optionalNumber(s.restaurant_lng),
     // Passage automatique à « livrée » sans « Reçu » du client (heures après « Livraison faite »).
     delivery_auto_confirm_hours: Number(s.delivery_auto_confirm_hours ?? 12),
-    // Frais de livraison : 'fixed' (delivery_fee) ou 'distance' (base + km au-delà des km inclus).
-    delivery_fee_mode: s.delivery_fee_mode === 'distance' ? 'distance' : 'fixed',
+    // Frais de livraison : 'fixed' (delivery_fee), 'distance' (base + km au-delà des km inclus)
+    // ou 'zone' (prix de la zone choisie, table delivery_zones).
+    delivery_fee_mode: ['distance', 'zone'].includes(s.delivery_fee_mode) ? s.delivery_fee_mode : 'fixed',
     delivery_fee_per_km: Number(s.delivery_fee_per_km ?? 200),
     delivery_free_km: Number(s.delivery_free_km ?? 2),
     delivery_max_km: Number(s.delivery_max_km ?? 0), // 0 = illimité

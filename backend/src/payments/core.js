@@ -23,14 +23,24 @@ const isMobileMoney = (method) => MOBILE_METHODS.includes(method);
 // Délai au-delà duquel une tentative en attente part dans la file « à vérifier ».
 const REVIEW_AFTER_MINUTES = 2;
 
+/** Qui paie la commission de l'agrégateur (réglage payment_fees_paid_by) : 'restaurant' (défaut) ou 'client'. */
+function feesPaidBy() {
+  return require('../db').getSettings().payment_fees_paid_by === 'client' ? 'client' : 'restaurant';
+}
+
 /**
- * Frais de paiement reportés sur le client pour `amount` = sous-total + livraison.
- * Taux = commission de l'agrégateur de l'opérateur (voir fees.js) : le restaurant reçoit `amount`.
+ * Frais de paiement facturés au client pour `amount` = sous-total + livraison.
+ * Taux = commission de l'agrégateur de l'opérateur (voir fees.js), toujours renvoyé pour être figé
+ * sur la commande (payment_fee_percent) : la commission réelle et le net sont calculés à ce taux
+ * à l'encaissement (handlePaid).
+ *  - 'client'     : frais ajoutés (gross-up), le restaurant reçoit `amount` ;
+ *  - 'restaurant' : aucun frais pour le client (fee = 0), le restaurant absorbe la commission.
  * @returns {{ fee: number, percent: number|null }}
  */
 function paymentFeeDetails(amount, method) {
   if (!isMobileMoney(method)) return { fee: 0, percent: null };
   const percent = fees.feePercentFor(method);
+  if (feesPaidBy() !== 'client') return { fee: 0, percent };
   return { fee: fees.customerFee(amount, percent), percent };
 }
 const paymentFee = (amount, method) => paymentFeeDetails(amount, method).fee;
@@ -45,7 +55,8 @@ const getPayment = (id) => db.prepare('SELECT * FROM payments WHERE id = ?').get
 const currentPayment = (orderId) =>
   db.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1').get(Number(orderId));
 const getOrderRow = (id) =>
-  db.prepare(`SELECT o.*, u.name AS customer_name FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?`).get(Number(id));
+  db.prepare(`SELECT o.*, CASE WHEN o.source = 'counter' THEN COALESCE(o.customer_label, 'Comptoir') ELSE u.name END AS customer_name
+              FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?`).get(Number(id));
 
 /** JSON PaymentAttempt (contrat). */
 function presentPayment(p) {
@@ -148,6 +159,8 @@ function handlePaid(p, { amount, operatorReference, providerReference, raw, vali
       `UPDATE orders SET payment_status = 'paid', payment_reference = ?, paid_at = datetime('now'),
          updated_at = datetime('now') WHERE id = ?`,
     ).run(opRef || fresh.identifier || providerReference || null, p.order_id);
+    // Vente au comptoir payée : elle part directement en cuisine (comme une vente en espèces).
+    db.prepare(`UPDATE orders SET status = 'confirmed' WHERE id = ? AND source = 'counter' AND status = 'pending'`).run(p.order_id);
     outcome = 'paid';
   });
 
@@ -402,7 +415,7 @@ function cancelPendingAttempts(orderId, message = 'Commande annulée') {
 function reviewQueue() {
   return db
     .prepare(
-      `SELECT p.*, o.total AS order_total, u.name AS customer_name,
+      `SELECT p.*, o.total AS order_total, CASE WHEN o.source = 'counter' THEN COALESCE(o.customer_label, 'Comptoir') ELSE u.name END AS customer_name,
               CAST((julianday('now') - julianday(p.created_at)) * 1440 AS INTEGER) AS waiting_minutes
        FROM payments p JOIN orders o ON o.id = p.order_id JOIN users u ON u.id = o.user_id
        WHERE p.needs_review = 1
@@ -544,7 +557,7 @@ function collections(q) {
     .prepare(
       `SELECT p.id, p.order_id, p.operator, p.provider, p.gross_amount AS gross, p.provider_fee, p.net_amount AS net,
               p.operator_reference, p.settlement_status, p.settlement_reference, p.settled_at, p.paid_at,
-              p.refund_status, p.refund_reference, p.validated_by, u.name AS customer_name
+              p.refund_status, p.refund_reference, p.validated_by, CASE WHEN o.source = 'counter' THEN COALESCE(o.customer_label, 'Comptoir') ELSE u.name END AS customer_name
        FROM payments p JOIN orders o ON o.id = p.order_id JOIN users u ON u.id = o.user_id
        ${f.sql} ORDER BY p.paid_at DESC, p.id DESC LIMIT 2000`,
     )
@@ -598,6 +611,7 @@ module.exports = {
   isMobileMoney,
   paymentFee,
   paymentFeeDetails,
+  feesPaidBy,
   orderFeePercent,
   getPayment,
   currentPayment,

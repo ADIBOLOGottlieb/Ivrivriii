@@ -255,11 +255,15 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
   });
 
   await t.test('changement d\'opérateur : frais et total recalculés, refus', async () => {
+    // Frais facturés au client (le défaut 'restaurant' est couvert par contract7.test.js).
+    assert.equal((await admin.call('PUT', '/api/admin/settings', { payment_fees_paid_by: 'client' })).status, 200);
     const cust = await customer();
     const o = (await order(cust, { payment_method: 'flooz' })).data;
+    assert.ok(o.payment_fee > 0);
     let r = await cust.call('POST', `/api/orders/${o.id}/payment-method`, { payment_method: 'mixx' });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     assert.equal(r.data.payment_method, 'mixx');
+    assert.ok(r.data.payment_fee > 0);
     assert.equal(r.data.total, r.data.subtotal + r.data.delivery_fee + r.data.payment_fee);
     assert.ok(sql.prepare(`SELECT 1 FROM audit_logs WHERE action = 'payment_method_changed'`).get());
     assert.equal((await cust.call('POST', `/api/orders/${o.id}/payment-method`, { payment_method: 'cash' })).status, 400);
@@ -284,6 +288,7 @@ test('serveur : suivi, rôles, paiement, stats, erreurs, frais et horaires', asy
     assert.equal((await cust.call('POST', `/api/orders/${o.id}/payment-method`, { payment_method: 'mixx' })).status, 400);
     sql.prepare(`UPDATE orders SET payment_status = 'pending', status = 'confirmed' WHERE id = ?`).run(o.id);
     assert.equal((await cust.call('POST', `/api/orders/${o.id}/payment-method`, { payment_method: 'mixx' })).status, 400);
+    await admin.call('PUT', '/api/admin/settings', { payment_fees_paid_by: 'restaurant' });
   });
 
   await t.test('journal des erreurs : rapports de l\'app, lecture par le gérant', async () => {

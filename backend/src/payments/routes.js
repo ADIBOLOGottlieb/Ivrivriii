@@ -42,7 +42,8 @@ function createApiRouter({ presentOrder, loadOrder }) {
     limit: 10,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    keyGenerator: (req) => `pay-user-${req.user.id}`,
+    // Personnel (caisse) : limite par commande, un caissier lance beaucoup de paiements dans la journée.
+    keyGenerator: (req) => (req.user.role === 'admin' ? `pay-staff-${req.user.id}-order-${req.params.id}` : `pay-user-${req.user.id}`),
     message: { error: 'Trop de demandes de paiement. Patientez quelques minutes.' },
   });
 

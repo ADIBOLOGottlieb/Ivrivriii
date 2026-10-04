@@ -77,7 +77,7 @@ function summary(order) {
   return `<div class="row"><span>Commande</span><b>n°${order.id}</b></div>
     <div class="row"><span>Sous-total</span><b>${fcfaLong(order.subtotal)}</b></div>
     ${order.delivery_fee ? `<div class="row"><span>Livraison</span><b>${fcfaLong(order.delivery_fee)}</b></div>` : ''}
-    <div class="row"><span>Frais de paiement (${String(core.orderFeePercent(order)).replace('.', ',')} %)</span><b>${fcfaLong(order.payment_fee)}</b></div>
+    ${order.payment_fee ? `<div class="row"><span>Frais de paiement (${String(core.orderFeePercent(order)).replace('.', ',')} %)</span><b>${fcfaLong(order.payment_fee)}</b></div>` : ''}
     <div class="row total"><span>Total à payer</span><b>${fcfaLong(order.total)}</b></div>`;
 }
 

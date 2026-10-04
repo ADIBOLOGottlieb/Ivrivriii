@@ -19,6 +19,8 @@ const { computeDeliveryFee } = require('./delivery-fee');
 const hours = require('./hours');
 const { createGeoRouter } = require('./geo');
 const { createErrorRouter } = require('./error-log');
+const zones = require('./zones');
+const { createReportsRouter } = require('./reports');
 
 /** Téléphone normalisé (auth.js) ; repli : numéro tel quel. */
 const normalizePhone = (p) => (typeof authModule.normalizePhone === 'function' ? authModule.normalizePhone(p) : p) || p;
@@ -209,6 +211,12 @@ function presentOrder(o, viewer) {
     ['pending', 'failed', 'expired'].includes(o.payment_status) && o.status !== 'cancelled';
   return {
     ...rest,
+    // Origine (application / vente au comptoir) et zone de livraison retenue.
+    source: o.source === 'counter' ? 'counter' : 'app',
+    dine_in: !!o.dine_in,
+    customer_label: o.customer_label ?? null,
+    delivery_zone_id: o.delivery_zone_id ?? null,
+    delivery_zone_name: o.delivery_zone_name ?? null,
     delivery_distance_km: o.delivery_distance_km ?? null,
     ...delivery.trackingInfo(o),
     pay_url: canPay ? `/pay/${o.id}?t=${payment_token}` : null,
@@ -216,7 +224,10 @@ function presentOrder(o, viewer) {
 }
 
 // Commande + nom du client + livreur (driver_name, driver_phone : null sans livreur).
-const ORDER_SELECT = `SELECT o.*, u.name AS customer_name, d.name AS driver_name, d.phone AS driver_phone
+// Vente au comptoir : customer_name = nom donné par le client (customer_label) ou « Comptoir ».
+const ORDER_SELECT = `SELECT o.*,
+    CASE WHEN o.source = 'counter' THEN COALESCE(o.customer_label, 'Comptoir') ELSE u.name END AS customer_name,
+    d.name AS driver_name, d.phone AS driver_phone
   FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN users d ON d.id = o.driver_id`;
 
 function loadOrder(id) {
@@ -257,6 +268,8 @@ function feeSettings() {
     payment_fee_percent: fee.by_operator.flooz,
     payment_fee_percent_by_operator: fee.by_operator,
     payment_fee_source: fee.source,
+    // Qui paie la commission : 'restaurant' (aucun frais facturé au client) ou 'client' (frais ajoutés au total).
+    payment_fees_paid_by: getSettings().payment_fees_paid_by,
     // Réglage admin (repli quand l'agrégateur n'a pas de commission configurée).
     payment_fee_percent_settings: getSettings().payment_fee_percent,
   };
@@ -302,13 +315,26 @@ app.get('/api/settings', h((req, res) => {
   });
 }));
 
-// Devis des frais de livraison pour une position (même calcul que la commande, delivery-fee.js).
+/** Zone de livraison choisie (?zone_id= ou corps) : entier > 0, null si absente, 400 sinon. */
+function parseZoneId(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n <= 0) throw httpError(400, 'Zone de livraison invalide');
+  return n;
+}
+
+/** Frais de livraison (delivery-fee.js) : zones actives chargées seulement en mode 'zone'. */
+function deliveryQuote(settings, loc, zoneId) {
+  return computeDeliveryFee(settings, loc, settings.delivery_fee_mode === 'zone' ? zones.activeZones() : [], zoneId);
+}
+
+// Devis des frais de livraison pour une position et/ou une zone (même calcul que la commande, delivery-fee.js).
 app.get('/api/delivery/quote', h((req, res) => {
   const { lat, lng } = req.query;
   const given = (v) => v !== undefined && v !== '';
   let loc = null;
   if (given(lat) || given(lng)) loc = parseLocation({ lat, lng });
-  res.json(computeDeliveryFee(getSettings(), loc));
+  res.json(deliveryQuote(getSettings(), loc, parseZoneId(req.query.zone_id)));
 }));
 
 app.get('/api/categories', h((_req, res) => {
@@ -336,6 +362,54 @@ function parseLocation(location) {
   return { lat, lng, accuracy: Number.isFinite(accuracy) ? accuracy : null };
 }
 
+/**
+ * Lignes de commande : les prix sont TOUJOURS recalculés côté serveur à partir du catalogue.
+ * @returns {{ product: object, qty: number }[]}
+ */
+function priceLines(items) {
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) throw httpError(400, 'Votre panier est vide');
+  const getProduct = db.prepare('SELECT * FROM products WHERE id = ?');
+  const perProduct = new Map();
+  return items.map((it) => {
+    const qty = Number(it?.quantity);
+    const p = getProduct.get(Number(it?.product_id));
+    if (!p || !p.available) throw httpError(400, `Un article n'est plus disponible`);
+    if (!Number.isInteger(qty) || qty < 1) throw httpError(400, 'Quantité invalide');
+    const totalQty = (perProduct.get(p.id) || 0) + qty;
+    if (totalQty > MAX_QUANTITY_PER_ITEM) {
+      throw httpError(400, `Quantité maximale : ${MAX_QUANTITY_PER_ITEM} par article (${p.name})`);
+    }
+    perProduct.set(p.id, totalQty);
+    return { product: p, qty };
+  });
+}
+
+const ORDER_COLUMNS = ['user_id', 'mode', 'address', 'phone', 'note', 'payment_method', 'subtotal', 'delivery_fee', 'total',
+  'payment_fee', 'payment_fee_percent', 'payment_status', 'payment_token', 'delivery_lat', 'delivery_lng', 'delivery_accuracy',
+  'delivery_distance_km', 'delivery_zone_id', 'delivery_zone_name', 'status', 'source', 'dine_in', 'customer_label'];
+
+/** Insère une commande et ses lignes (transaction) ; colonnes absentes = valeur par défaut. @returns id */
+function insertOrder(fields, lines) {
+  const row = { status: 'pending', source: 'app', dine_in: 0, customer_label: null, ...fields };
+  return transaction(() => {
+    const info = db
+      .prepare(`INSERT INTO orders (${ORDER_COLUMNS.join(', ')}) VALUES (${ORDER_COLUMNS.map(() => '?').join(', ')})`)
+      .run(...ORDER_COLUMNS.map((c) => row[c] ?? null));
+    const insertItem = db.prepare(
+      'INSERT INTO order_items (order_id, product_id, name, unit_price, quantity) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (const l of lines) insertItem.run(info.lastInsertRowid, l.product.id, l.product.name, l.product.price, l.qty);
+    return Number(info.lastInsertRowid);
+  });
+}
+
+/** Téléphone saisi → normalisé ; 400 s'il est invalide. */
+function checkedPhone(raw) {
+  const phone = String(normalizePhone(raw)).trim();
+  if (!/^\+?[\d\s-]{8,20}$/.test(phone) || phone.replace(/\D/g, '').length < 8) throw httpError(400, 'Numéro de téléphone invalide');
+  return phone;
+}
+
 app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   const settings = getSettings();
   // Interrupteur manuel et horaires d'ouverture (hours.js).
@@ -351,59 +425,32 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
   if (mode === 'delivery' && !address) throw httpError(400, 'Adresse de livraison requise');
   const rawPhone = optText(body.phone, 'Numéro de téléphone');
   if (!rawPhone) throw httpError(400, 'Numéro de téléphone requis');
-  const phone = String(normalizePhone(rawPhone)).trim();
-  if (!/^\+?[\d\s-]{8,20}$/.test(phone) || phone.replace(/\D/g, '').length < 8) throw httpError(400, 'Numéro de téléphone invalide');
+  const phone = checkedPhone(rawPhone);
   if (!PAYMENT_METHODS.includes(payment_method)) throw httpError(400, 'Moyen de paiement invalide');
   if (location != null && typeof location !== 'object') throw httpError(400, 'Position de livraison invalide');
   const loc = mode === 'delivery' ? parseLocation(location) : null;
+  const zoneId = mode === 'delivery' ? parseZoneId(body.zone_id) : null;
 
-  // Les prix sont toujours recalculés côté serveur à partir du catalogue.
-  const getProduct = db.prepare('SELECT * FROM products WHERE id = ?');
-  const perProduct = new Map();
-  const lines = items.map((it) => {
-    const qty = Number(it?.quantity);
-    const p = getProduct.get(Number(it?.product_id));
-    if (!p || !p.available) throw httpError(400, `Un article n'est plus disponible`);
-    if (!Number.isInteger(qty) || qty < 1) throw httpError(400, 'Quantité invalide');
-    const totalQty = (perProduct.get(p.id) || 0) + qty;
-    if (totalQty > MAX_QUANTITY_PER_ITEM) {
-      throw httpError(400, `Quantité maximale : ${MAX_QUANTITY_PER_ITEM} par article (${p.name})`);
-    }
-    perProduct.set(p.id, totalQty);
-    return { product: p, qty };
-  });
-
+  const lines = priceLines(items);
   const subtotal = lines.reduce((s, l) => s + l.product.price * l.qty, 0);
   if (subtotal < settings.min_order) throw httpError(400, `Commande minimum : ${settings.min_order} FCFA`);
-  // Frais de livraison recalculés par le serveur (jamais le montant envoyé par l'app) : fixe ou selon la distance.
-  const quote = mode === 'delivery' ? computeDeliveryFee(settings, loc) : null;
+  // Frais de livraison recalculés par le serveur (jamais le montant envoyé par l'app) : fixe, distance ou zone.
+  const quote = mode === 'delivery' ? deliveryQuote(settings, loc, zoneId) : null;
   if (quote && !quote.within_zone) throw httpError(400, quote.message);
   const deliveryFee = quote ? quote.fee : 0;
-  // Commission de l'agrégateur reportée sur le client : le restaurant reçoit sous-total + livraison.
-  // Le taux est figé sur la commande (net calculé au même taux au moment du paiement).
+  // Frais de paiement selon payment_fees_paid_by (payments/core.js) ; le taux est figé sur la commande
+  // (commission et net calculés au même taux au moment du paiement).
   const { fee: paymentFee, percent: paymentFeePercent } = payments.paymentFeeDetails(subtotal + deliveryFee, payment_method);
   const mobile = payments.isMobileMoney(payment_method);
 
-  const orderId = transaction(() => {
-    const info = db
-      .prepare(
-        `INSERT INTO orders (user_id, mode, address, phone, note, payment_method, subtotal, delivery_fee, total,
-           payment_fee, payment_fee_percent, payment_status, payment_token, delivery_lat, delivery_lng, delivery_accuracy,
-           delivery_distance_km)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        req.user.id, mode, mode === 'delivery' ? address.slice(0, 300) : null, phone.slice(0, 20),
-        note.slice(0, 300) || null, payment_method, subtotal, deliveryFee, subtotal + deliveryFee + paymentFee,
-        paymentFee, paymentFeePercent, mobile ? 'pending' : 'unpaid', mobile ? payments.newToken() : null,
-        loc?.lat ?? null, loc?.lng ?? null, loc?.accuracy ?? null, quote?.distance_km ?? null,
-      );
-    const insertItem = db.prepare(
-      'INSERT INTO order_items (order_id, product_id, name, unit_price, quantity) VALUES (?, ?, ?, ?, ?)',
-    );
-    for (const l of lines) insertItem.run(info.lastInsertRowid, l.product.id, l.product.name, l.product.price, l.qty);
-    return info.lastInsertRowid;
-  });
+  const orderId = insertOrder({
+    user_id: req.user.id, mode, address: mode === 'delivery' ? address.slice(0, 300) : null, phone: phone.slice(0, 20),
+    note: note.slice(0, 300) || null, payment_method, subtotal, delivery_fee: deliveryFee, total: subtotal + deliveryFee + paymentFee,
+    payment_fee: paymentFee, payment_fee_percent: paymentFeePercent, payment_status: mobile ? 'pending' : 'unpaid',
+    payment_token: mobile ? payments.newToken() : null, delivery_lat: loc?.lat ?? null, delivery_lng: loc?.lng ?? null,
+    delivery_accuracy: loc?.accuracy ?? null, delivery_distance_km: quote?.distance_km ?? null,
+    delivery_zone_id: quote?.zone_id ?? null, delivery_zone_name: quote?.zone_name ?? null,
+  }, lines);
 
   const order = loadOrder(orderId);
   audit('order_created', { userId: req.user.id, details: { orderId, total: order.total, payment_method }, ip: req.ip });
@@ -413,8 +460,9 @@ app.post('/api/orders', requireAuth, orderLimiter, h((req, res) => {
 }));
 
 // Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0.
+// Commandes passées dans l'app uniquement (les ventes au comptoir d'un caissier n'y apparaissent pas).
 app.get('/api/orders', requireAuth, h((req, res) => {
-  sendPage(res, req, 'o.user_id = ?', [req.user.id]);
+  sendPage(res, req, `o.user_id = ? AND o.source = 'app'`, [req.user.id]);
 }));
 
 app.get('/api/orders/:id', requireAuth, h((req, res) => {
@@ -471,7 +519,7 @@ app.post('/api/orders/:id/payment-method', requireAuth, h((req, res) => {
     .get(order.id);
   if (pendingAttempt) throw httpError(400, 'Une demande de paiement est en cours : attendez son expiration');
   if (order.payment_method === method) return res.json(presentOrder(order, req.user));
-  // Même calcul qu'à la création : le restaurant reçoit sous-total + livraison, au taux du nouvel opérateur.
+  // Même calcul qu'à la création (payment_fees_paid_by), au taux du nouvel opérateur.
   const { fee, percent } = payments.paymentFeeDetails(order.subtotal + order.delivery_fee, method);
   const total = order.subtotal + order.delivery_fee + fee;
   const info = db
@@ -548,6 +596,17 @@ app.get('/api/admin/stats', requireManager, h((_req, res) => {
        WHERE o.status != 'cancelled' AND o.payment_status != 'refunded' GROUP BY oi.name ORDER BY quantity DESC LIMIT 5`,
     )
     .all();
+  // Aujourd'hui par canal (application / comptoir), mêmes règles que `today`.
+  const channelRows = db
+    .prepare(
+      `SELECT source AS channel, COUNT(*) AS orders, COALESCE(SUM(CASE WHEN ${COUNTED} THEN total END), 0) AS revenue
+       FROM orders WHERE date(created_at) = date('now') GROUP BY source`,
+    )
+    .all();
+  const byChannelToday = ['app', 'counter'].map((channel) => {
+    const r = channelRows.find((x) => x.channel === channel);
+    return { channel, orders: Number(r?.orders ?? 0), revenue: Number(r?.revenue ?? 0) };
+  });
   const last7Days = db
     .prepare(
       `SELECT date(created_at) AS day, COUNT(*) AS orders,
@@ -570,15 +629,69 @@ app.get('/api/admin/stats', requireManager, h((_req, res) => {
     orders_change_percent: changePercent(today.orders, sameDayLastWeek.orders),
     hourly,
     peak_window: peakWindow(hourly),
+    by_channel_today: byChannelToday,
   });
 }));
 
-// Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0.
+// Pagination : ?limit=&before_id= ; en-tête X-Has-More: 1|0. Filtres : ?status=, ?source=app|counter.
 app.get('/api/admin/orders', requireAdmin, h((req, res) => {
-  const { status } = req.query;
-  if (status === 'active') sendPage(res, req, `o.status NOT IN ('delivered', 'cancelled')`, []);
-  else if (typeof status === 'string' && ORDER_STATUSES.includes(status)) sendPage(res, req, 'o.status = ?', [status]);
-  else sendPage(res, req, '', []);
+  const { status, source } = req.query;
+  const conds = [];
+  const params = [];
+  if (status === 'active') conds.push(`o.status NOT IN ('delivered', 'cancelled')`);
+  else if (typeof status === 'string' && ORDER_STATUSES.includes(status)) {
+    conds.push('o.status = ?');
+    params.push(status);
+  }
+  if (source !== undefined && source !== '') {
+    if (!['app', 'counter'].includes(source)) throw httpError(400, 'Origine invalide (app ou counter)');
+    conds.push('o.source = ?');
+    params.push(source);
+  }
+  sendPage(res, req, conds.join(' AND '), params);
+}));
+
+// ---------- Vente au comptoir (caisse) : tout le personnel ----------
+// Pas de minimum de commande, pas d'horaires, pas de limiteur : le personnel est sur place.
+// La commande appartient au membre du personnel (user_id) : il lance lui-même le push USSD
+// (POST /api/orders/:id/payments) et suit le paiement (GET /api/orders/:id/payments/current).
+app.post('/api/admin/counter-orders', requireAdmin, h((req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const { service, payment_method } = body;
+  if (!['dine_in', 'takeaway'].includes(service)) throw httpError(400, 'Service invalide (sur place ou à emporter)');
+  if (!PAYMENT_METHODS.includes(payment_method)) throw httpError(400, 'Moyen de paiement invalide');
+  const customerName = optText(body.customer_name, 'Nom du client').slice(0, 60);
+  const note = optText(body.note, 'Note');
+  const rawPhone = optText(body.phone, 'Numéro de téléphone');
+  const mobile = payments.isMobileMoney(payment_method);
+  if (mobile && !rawPhone) throw httpError(400, 'Numéro de téléphone requis pour le paiement mobile money');
+  const settings = getSettings();
+  const phone = rawPhone ? checkedPhone(rawPhone) : String(settings.restaurant_phone || '').trim() || '-';
+
+  const lines = priceLines(body.items);
+  const subtotal = lines.reduce((s, l) => s + l.product.price * l.qty, 0);
+  // Pas de livraison ; frais de paiement selon payment_fees_paid_by (comme dans l'app).
+  const { fee: paymentFee, percent: paymentFeePercent } = payments.paymentFeeDetails(subtotal, payment_method);
+
+  const orderId = insertOrder({
+    user_id: req.user.id, mode: 'pickup', address: null, phone: phone.slice(0, 20), note: note.slice(0, 300) || null,
+    payment_method, subtotal, delivery_fee: 0, total: subtotal + paymentFee, payment_fee: paymentFee,
+    payment_fee_percent: paymentFeePercent,
+    // Espèces : encaissé au comptoir, la commande part directement en cuisine.
+    status: mobile ? 'pending' : 'confirmed',
+    payment_status: mobile ? 'pending' : 'unpaid',
+    payment_token: mobile ? payments.newToken() : null,
+    source: 'counter', dine_in: service === 'dine_in' ? 1 : 0, customer_label: customerName || null,
+  }, lines);
+
+  const order = loadOrder(orderId);
+  audit('counter_order_created', {
+    userId: req.user.id,
+    details: { orderId, total: order.total, payment_method, service, items: lines.length },
+    ip: req.ip,
+  });
+  checkOrder(order, { name: order.customer_name });
+  res.status(201).json(presentOrder(order, req.user));
 }));
 
 app.patch('/api/admin/orders/:id/status', requireAdmin, h((req, res) => {
@@ -726,7 +839,7 @@ app.get('/api/admin/users', requireManager, h((req, res) => {
         `SELECT u.id, u.name, u.phone, u.email, u.role, u.address, u.created_at, u.active,
                 COUNT(o.id) AS orders_count,
                 COALESCE(SUM(CASE WHEN o.status = 'delivered' AND o.payment_status != 'refunded' THEN o.total END), 0) AS total_spent
-         FROM users u LEFT JOIN orders o ON o.user_id = u.id
+         FROM users u LEFT JOIN orders o ON o.user_id = u.id AND o.source = 'app'
          ${where}
          GROUP BY u.id ORDER BY u.created_at DESC, u.id DESC LIMIT 200`,
       )
@@ -751,8 +864,11 @@ app.put('/api/admin/settings', requireManager, h((req, res) => {
   };
   const text = ['restaurant_phone', 'restaurant_address'];
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  if (body.delivery_fee_mode !== undefined && !['fixed', 'distance'].includes(body.delivery_fee_mode)) {
-    throw httpError(400, 'Mode de frais de livraison invalide (fixed ou distance)');
+  if (body.delivery_fee_mode !== undefined && !['fixed', 'distance', 'zone'].includes(body.delivery_fee_mode)) {
+    throw httpError(400, 'Mode de frais de livraison invalide (fixed, distance ou zone)');
+  }
+  if (body.payment_fees_paid_by !== undefined && !['restaurant', 'client'].includes(body.payment_fees_paid_by)) {
+    throw httpError(400, 'Valeur invalide pour payment_fees_paid_by (restaurant ou client)');
   }
   if (body.hours_enabled !== undefined && ![true, false, 0, 1].includes(body.hours_enabled)) {
     throw httpError(400, 'Valeur invalide pour hours_enabled');
@@ -818,6 +934,11 @@ app.put('/api/admin/settings', requireManager, h((req, res) => {
     if (body.delivery_fee_mode !== undefined) {
       upsert.run('delivery_fee_mode', body.delivery_fee_mode);
       changed.delivery_fee_mode = body.delivery_fee_mode;
+    }
+    // Commission de l'agrégateur : s'applique aux NOUVELLES commandes (les existantes gardent leur total).
+    if (body.payment_fees_paid_by !== undefined) {
+      upsert.run('payment_fees_paid_by', body.payment_fees_paid_by);
+      changed.payment_fees_paid_by = body.payment_fees_paid_by;
     }
     if (body.hours_enabled !== undefined) {
       upsert.run('hours_enabled', body.hours_enabled ? '1' : '0');
@@ -888,6 +1009,10 @@ app.get('/api/admin/audit', requireManager, h((req, res) => {
       .all(limit),
   );
 }));
+
+// Zones de livraison (zones.js) et rapports par période (reports.js).
+app.use(zones.createZonesRouter());
+app.use(createReportsRouter());
 
 // Livraison : espace livreur, « Reçu » du client, livreurs et attribution (admin).
 app.use(delivery.createDeliveryRouter({ loadOrder, loadOrders, presentOrder }));

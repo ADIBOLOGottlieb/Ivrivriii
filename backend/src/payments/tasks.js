@@ -64,7 +64,7 @@ function autoCancelUnpaid() {
   const minutes = getSettings().momo_unpaid_cancel_minutes;
   const orders = db
     .prepare(
-      `SELECT o.id, o.user_id, o.payment_status, o.total FROM orders o
+      `SELECT o.id, o.user_id, o.source, o.payment_status, o.total FROM orders o
        WHERE o.status = 'pending' AND o.payment_method IN (${core.MOBILE_METHODS.map(() => '?').join(',')})
          AND o.payment_status IN ('pending', 'failed', 'expired')
          AND o.created_at <= datetime('now', ?)

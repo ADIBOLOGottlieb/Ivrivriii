@@ -14,7 +14,7 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 - Menu par catégories, recherche toujours visible, section « Les plus demandés »
 - Panier (jusqu'à 999 par article, appui long sur la quantité pour la saisir), total estimé avec livraison et frais mobile money
 - Livraison : position sur la carte (recherche d'adresse, « Ma position », adresse retrouvée automatiquement) ou adresses enregistrées
-- Frais de livraison fixes ou **selon la distance** (devis affiché avant de commander, zone maximale)
+- Frais de livraison fixes, **selon la distance** (devis affiché avant de commander, zone maximale) ou **par zone / quartier** (zone choisie ou reconnue d'après la position)
 - Horaires d'ouverture affichés (« Fermé — ouvre lundi à 10:00 »), commande impossible hors horaires
 - Paiement : espèces, **Flooz** (Moov Africa) ou **Mixx by Yas** par **push USSD** : le client confirme avec son code PIN sur son téléphone (jamais dans l'app)
 - **Suivi du livreur en direct** sur la carte (scooter qui avance, heure d'arrivée estimée), annulation tant que la commande est en attente, « Paiement non abouti » → Réessayer / Annuler
@@ -29,6 +29,9 @@ mobile/    Application Flutter (client + admin), logo dans assets/images/logo.jp
 - Tableau de bord, commandes (alerte « Nouvelle commande », notification « Paiement reçu »), menu, catégories, clients
 - **Paiements à vérifier** : validation manuelle (référence obligatoire, montant contrôlé) ou rejet
 - **Encaissements** : totaux par jour et opérateur (encaissé, frais, net, reversé), reversement par lot, export CSV
+- **Caisse** : ventes au comptoir (sur place / à emporter, espèces ou push Flooz/Mixx lancé par le caissier), envoyées directement en cuisine
+- **Rapports** par période : chiffre d'affaires, panier moyen, répartition app/comptoir, livraison/retrait/sur place, moyens de paiement et commissions, livreurs, jours, plats les plus vendus, export CSV (Excel)
+- **Zones de livraison** : prix par quartier, reconnaissance facultative par un cercle sur la carte
 - Remboursement d'une commande payée puis annulée
 - Paramètres : ouvert/fermé, livraison, minimum, frais de paiement, délai d'annulation des commandes mobile money non payées, compte marchand (numéros masqués)
 - Sécurité : journal d'audit de toutes les actions sur l'argent, alertes (pics, paiements en attente, écarts de rapprochement)
@@ -59,7 +62,7 @@ Au premier lancement, l'API crée la base `ivrivrii.db`, un menu de démonstrati
 | `PAYGATE_AUTH_TOKEN` | clé API PayGate Global (**secret**) |
 | `MERCHANT_FLOOZ_NUMBER`, `MERCHANT_MIXX_NUMBER` | numéros marchands du restaurant (affichés masqués dans l'admin) |
 | `MERCHANT_DISPLAY_NAME` | nom affiché au client, « Ivrivrii Chicken » par défaut |
-| `PROVIDER_FEE_PERCENT_FLOOZ`, `PROVIDER_FEE_PERCENT_MIXX` (ou `PROVIDER_FEE_PERCENT` pour les deux) | commission exacte de votre contrat avec l'agrégateur, en % : ce sont les frais payés par le client (voir « Frais de paiement ») |
+| `PROVIDER_FEE_PERCENT_FLOOZ`, `PROVIDER_FEE_PERCENT_MIXX` (ou `PROVIDER_FEE_PERCENT` pour les deux) | commission exacte de votre contrat avec l'agrégateur, en % : sert au calcul de la commission réelle et du net (voir « Frais de paiement ») |
 | `KADEV_PUBLIC_KEY`, `KADEV_SECRET_KEY`, `KADEV_WEBHOOK_SECRET` | uniquement si `PAYMENT_PROVIDER=kadev` |
 | `PAYMENT_EXPIRY_SECONDS` | durée d'une demande de paiement (120 par défaut) |
 | `ALLOW_SIMULATION` | `1` : autorise le paiement simulé par le client en production (démonstration uniquement) |
@@ -144,14 +147,18 @@ Sans prestataire configuré (`PAYMENT_PROVIDER=simulation`, valeur actuelle sur 
 Flooz utilise le réseau `FLOOZ`, Mixx by Yas (ex-T-Money) le réseau `TMONEY`.
 
 ### Frais de paiement
-Les frais payés par le client sont **exactement la commission de l'agrégateur**, opérateur par opérateur, et le restaurant reçoit exactement commande + livraison. L'agrégateur prélève p % du montant payé : le serveur demande donc au client total = ⌈(commande + livraison) / (1 − p/100)⌉.
+Réglage **« Qui paie les frais »** (`payment_fees_paid_by`, gérant, Paramètres) :
 
-Exemple : 20 000 F + 1 000 F de livraison avec une commission de 3,5 % → total 21 762 F, commission 762 F, net pour le restaurant 21 000 F.
+- **`restaurant` (par défaut)** : le client paie le prix affiché (total = commande + livraison, `payment_fee = 0`). Le taux de la commission est quand même figé sur la commande (`payment_fee_percent`) : à l'encaissement (push, validation manuelle, paiement rattrapé), le serveur enregistre la commission réelle `provider_fee = ⌈brut × p/100⌉` et le net `net_amount = brut − commission`, visibles dans **Encaissements** et les rapports. Exemple : 21 000 F à 3,5 % → commission 735 F, net 20 265 F.
+- **`client`** : les frais payés par le client sont **exactement la commission de l'agrégateur**, opérateur par opérateur, et le restaurant reçoit exactement commande + livraison. L'agrégateur prélève p % du montant payé : le serveur demande donc au client total = ⌈(commande + livraison) / (1 − p/100)⌉. Exemple : 20 000 F + 1 000 F de livraison avec une commission de 3,5 % → total 21 762 F, commission 762 F, net pour le restaurant 21 000 F.
+
+Le réglage s'applique aux nouvelles commandes (et au changement Flooz ↔ Mixx) ; les commandes déjà passées gardent leur total.
+
 
 - Le taux vient de `PROVIDER_FEE_PERCENT_FLOOZ` / `PROVIDER_FEE_PERCENT_MIXX` (repli : `PROVIDER_FEE_PERCENT`). Dans l'admin, le champ « frais de paiement » devient alors informatif (« fixés par l'agrégateur »).
 - Sans ces variables, ou en mode simulation, c'est le réglage « frais de paiement » de l'admin qui s'applique (2 % par défaut).
 - Le taux est enregistré sur chaque commande : un changement ne modifie pas les commandes déjà passées.
-- ⚠️ Mettez la commission **exacte** de votre contrat. Une valeur `0` voudrait dire 0 % de frais pour le client, et le restaurant paierait la commission.
+- ⚠️ Mettez la commission **exacte** de votre contrat : c'est elle qui calcule le net du restaurant (et, en mode `client`, les frais facturés).
 
 ## 5. Argent vers les comptes marchands du restaurant
 
@@ -237,18 +244,21 @@ La tâche GitHub `keep-alive` n'est pas fiable (GitHub espace les tâches planif
 | GET/POST | `/api/driver/orders?scope=` (available, mine, history) · POST `/api/driver/orders/:id/take` · `/delivered` · `/release` · GET `/api/driver/stats` | livreur |
 | POST | `/api/orders/:id/received` | client |
 | POST | `/api/driver/location` (position pendant une livraison) | livreur |
-| GET | `/api/delivery/quote?lat=&lng=` (frais de livraison) | public |
+| GET | `/api/delivery/quote?lat=&lng=&zone_id=` (frais de livraison ; mode zone : `zone_id`, `zone_name`) · `/api/delivery/zones` (zones actives) | public |
+| GET/POST/PUT/DELETE | `/api/admin/delivery-zones[/:id]` (zone utilisée par une commande : désactivée au lieu d'être supprimée) | gérant |
+| POST | `/api/admin/counter-orders` (vente au comptoir : espèces → en cuisine directement ; Flooz/Mixx → le caissier lance le push avec `/api/orders/:id/payments`) | admin |
+| GET | `/api/admin/reports?from=&to=` (synthèse par période, 366 jours max) · `/api/admin/reports/export.csv` (une ligne par commande, « ; », UTF-8 avec BOM) | gérant |
 | GET | `/api/geo/reverse?lat=&lng=`, `/api/geo/route?from=lat,lng&to=lat,lng` (cache) | connecté |
 | POST | `/api/orders/:id/payment-method` (Flooz ↔ Mixx avant le paiement) | client |
 | POST | `/api/client-errors` (plantages de l'app) | public |
 | GET | `/api/admin/errors?source=` · GET/POST/PATCH `/api/admin/staff[/:id]` | gérant |
 | GET/POST/PATCH | `/api/admin/drivers[/:id]` (cuisine : lecture) · PATCH `/api/admin/orders/:id/assign` | admin |
 | GET/POST | `/api/admin/collections` · `/collections/export.csv` · POST `/api/admin/settlements` · POST `/api/admin/orders/:id/refund` | admin |
-| GET | `/api/admin/stats`, `/api/admin/orders?status=`, `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
+| GET | `/api/admin/stats` (dont `by_channel_today`), `/api/admin/orders?status=&source=` (app ou counter), `/api/admin/users`, `/api/admin/monitoring`, `/api/admin/audit` | admin |
 | PATCH | `/api/admin/orders/:id/status` (pas de cuisine avant paiement mobile money) | admin |
 | POST/PUT/DELETE | `/api/admin/products[/:id]`, `/api/admin/categories[/:id]` · POST `/api/admin/upload` · PUT `/api/admin/settings` | admin |
 | POST | `/api/payments/paygate/webhook`, `/api/payments/kadev/webhook` | prestataires |
 
-« admin » = tout le personnel ; « gérant » = niveau Gérant seulement. Réservés au gérant : statistiques, réglages, menu (création/modification), clients, paiements, encaissements, remboursements, surveillance, audit, mots de passe oubliés, personnel, erreurs.
+« admin » = tout le personnel ; « gérant » = niveau Gérant seulement. Réservés au gérant : statistiques, rapports, zones de livraison, réglages, menu (création/modification), clients, paiements, encaissements, remboursements, surveillance, audit, mots de passe oubliés, personnel, erreurs.
 
 Les prix et montants sont toujours recalculés par le serveur à partir du catalogue.

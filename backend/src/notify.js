@@ -52,7 +52,8 @@ const STATUS_TEXT = {
  */
 function statusChanged(order, status, extra = {}) {
   const text = STATUS_TEXT[status];
-  if (text) toUser(order.user_id, { title: `Commande n°${order.id}`, body: text(order, extra), data: data(order) });
+  // Vente au comptoir : la commande appartient au caissier, pas de notification « client ».
+  if (text && order.source !== 'counter') toUser(order.user_id, { title: `Commande n°${order.id}`, body: text(order, extra), data: data(order) });
   if (status === 'ready' && order.mode === 'delivery') readyForDrivers(order);
 }
 
@@ -108,7 +109,7 @@ function deliveryReceived(order) {
 
 /** Paiement reçu → client et administrateurs. */
 function paymentReceived(order, amount) {
-  toUser(order.user_id, { title: 'Paiement reçu', body: `Paiement de ${amount} FCFA reçu pour la commande n°${order.id}. Merci !`, data: data(order) });
+  if (order.source !== 'counter') toUser(order.user_id, { title: 'Paiement reçu', body: `Paiement de ${amount} FCFA reçu pour la commande n°${order.id}. Merci !`, data: data(order) });
   toRole('admin', { title: 'Paiement reçu', body: `Commande n°${order.id} – ${amount} FCFA`, data: data(order) });
 }
 
