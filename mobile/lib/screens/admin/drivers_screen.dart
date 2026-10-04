@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../models.dart';
+import '../../providers/auth_provider.dart';
 import '../../services/delivery_api.dart';
 import '../../theme.dart';
 import '../../widgets/common.dart';
@@ -94,18 +96,22 @@ class _DriversScreenState extends State<DriversScreen> {
   @override
   Widget build(BuildContext context) {
     final drivers = _drivers;
+    // Compte « cuisine » : liste en lecture seule (création et modification réservées au gérant).
+    final readOnly = context.watch<AuthProvider>().user?.isKitchen ?? false;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Livreurs'),
-        actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh_rounded))],
+        actions: [IconButton(tooltip: 'Actualiser', onPressed: _load, icon: const Icon(Icons.refresh_rounded))],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _add,
-        backgroundColor: AppColors.red,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.person_add_alt_1_rounded),
-        label: const Text('Ajouter un livreur'),
-      ),
+      floatingActionButton: readOnly
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _add,
+              backgroundColor: AppColors.red,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              label: const Text('Ajouter un livreur'),
+            ),
       body: RefreshIndicator(
         onRefresh: _load,
         child: drivers == null
@@ -129,8 +135,8 @@ class _DriversScreenState extends State<DriversScreen> {
                     itemBuilder: (_, i) => _DriverTile(
                       driver: drivers[i],
                       busy: _busy.contains(drivers[i].id),
-                      onToggle: () => _toggle(drivers[i]),
-                      onResetPassword: () => _resetPassword(drivers[i]),
+                      onToggle: readOnly ? null : () => _toggle(drivers[i]),
+                      onResetPassword: readOnly ? null : () => _resetPassword(drivers[i]),
                     ),
                   ),
       ),
@@ -141,8 +147,9 @@ class _DriversScreenState extends State<DriversScreen> {
 class _DriverTile extends StatelessWidget {
   final Driver driver;
   final bool busy;
-  final VoidCallback onToggle;
-  final VoidCallback onResetPassword;
+  // null : lecture seule (boutons masqués).
+  final VoidCallback? onToggle;
+  final VoidCallback? onResetPassword;
   const _DriverTile({
     required this.driver,
     required this.busy,
@@ -206,6 +213,9 @@ class _DriverTile extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
+            if (onToggle == null && onResetPassword == null)
+              const SizedBox(height: 4)
+            else
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [

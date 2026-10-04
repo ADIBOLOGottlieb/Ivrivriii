@@ -3,6 +3,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../../models.dart';
 import '../../services/api.dart';
+import '../../services/driver_tracker.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
@@ -103,8 +104,10 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
             children: [
               StatusChip(status: o.status),
               const Spacer(),
-              Text('Commandée à ${formatTime(o.createdAt)}',
-                  style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600)),
+              Text(
+                'Commandée à ${formatTime(o.createdAt)}',
+                style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -119,8 +122,10 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(o.customerName.isEmpty ? 'Client' : o.customerName,
-                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                    Text(
+                      o.customerName.isEmpty ? 'Client' : o.customerName,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                    ),
                     const SizedBox(height: 4),
                     Row(
                       children: [
@@ -138,8 +143,10 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(o.hasLocation ? Icons.location_on_rounded : Icons.location_off_outlined,
-                            color: o.hasLocation ? AppColors.red : cs.onSurfaceVariant),
+                        Icon(
+                          o.hasLocation ? Icons.location_on_rounded : Icons.location_off_outlined,
+                          color: o.hasLocation ? AppColors.red : cs.onSurfaceVariant,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -154,8 +161,10 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    Text('Appuyez ici pour ouvrir Google Maps',
-                        style: TextStyle(fontSize: 12.5, color: cs.onSurfaceVariant)),
+                    Text(
+                      'Appuyez ici pour ouvrir Google Maps',
+                      style: TextStyle(fontSize: 12.5, color: cs.onSurfaceVariant),
+                    ),
                   ],
                 ),
               ),
@@ -185,10 +194,7 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
           ),
           const SizedBox(height: 12),
           PaymentBanner(order: o),
-          if (o.awaitingReceipt) ...[
-            const SizedBox(height: 8),
-            const AwaitingReceiptBadge(),
-          ],
+          if (o.awaitingReceipt) ...[const SizedBox(height: 8), const AwaitingReceiptBadge()],
           if (canTake(o)) ...[
             const SizedBox(height: 12),
             _bigButton(
@@ -208,29 +214,32 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
           ],
           if (finished && o.receivedAt != null) ...[
             const SizedBox(height: 8),
-            Text('Reçu confirmé par le client le ${formatDateTime(o.receivedAt!)}',
-                style: TextStyle(color: cs.onSurfaceVariant)),
+            Text(
+              'Reçu confirmé par le client le ${formatDateTime(o.receivedAt!)}',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
           ] else if (o.driverDeliveredAt != null) ...[
             const SizedBox(height: 8),
-            Text('Livraison faite le ${formatDateTime(o.driverDeliveredAt!)}',
-                style: TextStyle(color: cs.onSurfaceVariant)),
+            Text(
+              'Livraison faite le ${formatDateTime(o.driverDeliveredAt!)}',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
           ],
           if (note.isNotEmpty) ...[
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
-              ),
+              decoration: BoxDecoration(color: cs.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(Icons.sticky_note_2_rounded, color: cs.onSurfaceVariant),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('Note du client : $note',
-                        style: TextStyle(fontSize: 15, color: cs.onSurface, fontWeight: FontWeight.w600)),
+                    child: Text(
+                      'Note du client : $note',
+                      style: TextStyle(fontSize: 15, color: cs.onSurface, fontWeight: FontWeight.w600),
+                    ),
                   ),
                 ],
               ),
@@ -265,7 +274,8 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
                     child: Row(
                       children: [
                         const Expanded(
-                            child: Text('Total', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16))),
+                          child: Text('Total', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                        ),
                         Price(o.total, size: 18),
                       ],
                     ),
@@ -278,11 +288,16 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
             const SizedBox(height: 16),
             const Text('Itinéraire', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
-            RouteMap(
-              from: _restaurant!,
-              to: LatLng(o.deliveryLat!, o.deliveryLng!),
-              fromLabel: _restaurantAddress.isEmpty ? 'Restaurant' : 'Restaurant : $_restaurantAddress',
-              toLabel: address.isEmpty ? 'Client' : 'Client : $address',
+            // Livraison en cours : ma position (celle que voit le client) s'affiche sur la carte.
+            ValueListenableBuilder<DriverLocation?>(
+              valueListenable: DriverTracker.instance.position,
+              builder: (context, mine, _) => RouteMap(
+                from: _restaurant!,
+                to: LatLng(o.deliveryLat!, o.deliveryLng!),
+                fromLabel: _restaurantAddress.isEmpty ? 'Restaurant' : 'Restaurant : $_restaurantAddress',
+                toLabel: address.isEmpty ? 'Client' : 'Client : $address',
+                driver: canMarkDelivered(o, me) ? (mine ?? o.driverLocation) : null,
+              ),
             ),
           ],
         ],
@@ -291,14 +306,16 @@ class _DriverOrderDetailScreenState extends State<DriverOrderDetailScreen> {
   }
 
   Widget _line(String label, int amount, ColorScheme cs) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Row(
-          children: [
-            Expanded(child: Text(label, style: TextStyle(color: cs.onSurfaceVariant))),
-            Text(formatPrice(amount), style: TextStyle(color: cs.onSurfaceVariant)),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(label, style: TextStyle(color: cs.onSurfaceVariant)),
         ),
-      );
+        Text(formatPrice(amount), style: TextStyle(color: cs.onSurfaceVariant)),
+      ],
+    ),
+  );
 
   Widget _bigButton({
     required IconData icon,

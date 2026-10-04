@@ -10,6 +10,7 @@ import '../../utils/format.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import 'client_shell.dart';
+import 'opening_hours_banner.dart';
 import 'product_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -85,6 +86,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Heure d'ouverture / fermeture prévue passée : réglages rechargés (sans recharger le menu).
+  Future<void> _refreshSettings() async {
+    try {
+      final s = await Api.instance.settings(fresh: true);
+      if (mounted) setState(() => _settings = s);
+    } catch (_) {
+      // Réseau indisponible : on garde l'état affiché.
+    }
+  }
+
   List<Product> get _filtered {
     final q = _query.toLowerCase();
     return _products.where((p) {
@@ -122,6 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
               firstName: (user?.name ?? '').trim().split(' ').first,
               isOpen: _settings?.isOpen ?? true,
               deliveryFee: _settings?.deliveryFee ?? 0,
+              deliveryFeeFrom: _settings?.feeByDistance ?? false,
               cartCount: cartCount,
               query: _query,
               scheme: Theme.of(context).colorScheme,
@@ -130,6 +142,15 @@ class _HomeScreenState extends State<HomeScreen> {
               onClear: _clearQuery,
             ),
           ),
+          // « Fermé — ouvre lundi à 10:00 » ou « Ferme à 22:00 » (moins de 30 min).
+          if (_settings != null)
+            SliverToBoxAdapter(
+              child: OpeningHoursBanner(
+                settings: _settings!,
+                margin: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                onExpired: () => _refreshSettings(),
+              ),
+            ),
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.only(top: 12),
@@ -222,6 +243,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
   final String firstName;
   final bool isOpen;
   final int deliveryFee;
+  final bool deliveryFeeFrom; // frais selon la distance : « dès »
   final int cartCount;
   final String query;
   final ColorScheme scheme;
@@ -234,6 +256,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
     required this.firstName,
     required this.isOpen,
     required this.deliveryFee,
+    required this.deliveryFeeFrom,
     required this.cartCount,
     required this.query,
     required this.scheme,
@@ -371,7 +394,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
                             Flexible(
                               child: Text(
                                 isOpen
-                                    ? 'Ouvert • Livraison ${formatPrice(deliveryFee)}'
+                                    ? 'Ouvert • Livraison ${deliveryFeeFrom ? 'dès ' : ''}${formatPrice(deliveryFee)}'
                                     : 'Fermé pour le moment',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -474,6 +497,7 @@ class _HomeHeaderDelegate extends SliverPersistentHeaderDelegate {
         oldDelegate.firstName != firstName ||
         oldDelegate.isOpen != isOpen ||
         oldDelegate.deliveryFee != deliveryFee ||
+        oldDelegate.deliveryFeeFrom != deliveryFeeFrom ||
         oldDelegate.cartCount != cartCount ||
         oldDelegate.query != query ||
         oldDelegate.scheme != scheme ||

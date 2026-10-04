@@ -16,6 +16,8 @@ dependencies:
   http: ^1.2.2
   http_parser: ^4.1.0
   shared_preferences: ^2.3.3
+  # Jeton de connexion chiffré (Keystore Android).
+  flutter_secure_storage: ^10.0.0
   image_picker: ^1.1.2
   url_launcher: ^6.3.1
   geolocator: ^11.1.0

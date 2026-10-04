@@ -40,6 +40,7 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
   int _gen = 0; // seule la dernière requête lancée est affichée
   int? _lastMaxId;
   final Set<int> _updating = {};
+  int? _selectedId; // tablette : commande affichée dans le panneau de détail
   late final SmartPoller _poller;
 
   @override
@@ -205,7 +206,40 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
           ),
         ),
       ),
-      body: RefreshIndicator(
+      body: LayoutBuilder(builder: (context, constraints) {
+        // Tablette : maître/détail (liste à gauche, commande choisie à droite).
+        if (constraints.maxWidth < _splitWidth) return _list(orders, split: false);
+        return Row(
+          children: [
+            SizedBox(width: constraints.maxWidth >= 1100 ? 440 : 380, child: _list(orders, split: true)),
+            const VerticalDivider(width: 1, thickness: 1),
+            Expanded(child: _detailPane(orders)),
+          ],
+        );
+      }),
+    );
+  }
+
+  /// Largeur (zone de contenu) à partir de laquelle la liste et le détail s'affichent côte à côte.
+  static const _splitWidth = 720.0;
+
+  Widget _detailPane(List<Order>? orders) {
+    final id = _selectedId;
+    // Onglet masqué : pas de détail (et donc pas de suivi automatique en arrière-plan).
+    if (id == null || !widget.active) {
+      return const EmptyState(
+        emoji: '🧾',
+        title: 'Choisissez une commande',
+        message: 'Son détail et ses actions s\'affichent ici.',
+      );
+    }
+    final initial = orders?.where((o) => o.id == id).firstOrNull;
+    return OrderDetailScreen(key: ValueKey('detail-$id'), orderId: id, initial: initial, admin: true);
+  }
+
+  Widget _list(List<Order>? orders, {required bool split}) {
+    final scheme = Theme.of(context).colorScheme;
+    return RefreshIndicator(
         onRefresh: _load,
         child: orders == null
             ? (_error != null
@@ -228,13 +262,18 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                       final next = o.status == 'cancelled'
                           ? null
                           : adminNextStatus(o.status, o.isDelivery, driverDelivered: o.driverDeliveredAt != null);
-                      return FadeSlideIn(
+                      final card = FadeSlideIn(
                         key: ValueKey('$_filter-${o.id}'),
                         delay: FadeSlideIn.stagger(i),
                         child: OrderCard(
                           order: o,
                           showCustomer: true,
                           onTap: () async {
+                            if (split) {
+                              // Tablette : détail affiché à droite de la liste.
+                              setState(() => _selectedId = o.id);
+                              return;
+                            }
                             await Navigator.push(
                               context,
                               MaterialPageRoute(
@@ -253,9 +292,21 @@ class _AdminOrdersScreenState extends State<AdminOrdersScreen> {
                                 ),
                         ),
                       );
+                      if (!split) return card;
+                      // Commande affichée à droite : bordure de sélection.
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: o.id == _selectedId ? scheme.primary : Colors.transparent,
+                            width: 2,
+                          ),
+                        ),
+                        child: card,
+                      );
                     },
                   ),
-      ),
     );
   }
 

@@ -5,9 +5,12 @@ import 'package:flutter/services.dart';
 
 import '../../models.dart';
 import '../../services/driver_api.dart';
+import '../../services/driver_tracker.dart';
 import '../../widgets/animations.dart';
 import 'driver_orders_screen.dart';
 import 'driver_profile_screen.dart';
+import 'driver_tracking_banner.dart';
+import 'driver_actions.dart';
 
 /// Espace livreur : À livrer, Mes livraisons, Historique, Profil.
 class DriverShell extends StatefulWidget {
@@ -31,6 +34,7 @@ class DriverShellState extends State<DriverShell> {
   /// pas d'alerte pour celles présentes à l'ouverture).
   Set<int>? _knownAvailable;
   Timer? _timer;
+  int _ticks = 0;
   bool _polling = false;
 
   @override
@@ -42,12 +46,19 @@ class DriverShellState extends State<DriverShell> {
       final state = WidgetsBinding.instance.lifecycleState;
       final foreground = state == null || state == AppLifecycleState.resumed;
       if (foreground && _index != availableTab) _pollAvailable();
+      // Livraison attribuée par le restaurant pendant qu'on était ailleurs : le partage démarre
+      // (vérifié toutes les minutes seulement, et seulement s'il ne tourne pas déjà).
+      if (foreground && ++_ticks % 3 == 0 && !DriverTracker.instance.wanted) {
+        DriverTracker.instance.refresh(currentUserId(context));
+      }
     });
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    // Déconnexion : plus de partage de position.
+    DriverTracker.instance.stop();
     super.dispose();
   }
 
@@ -87,32 +98,36 @@ class DriverShellState extends State<DriverShell> {
         : '${fresh.length} nouvelles livraisons à prendre';
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 8),
-        content: Row(
-          children: [
-            const Icon(Icons.delivery_dining_rounded, color: Colors.lightGreenAccent),
-            const SizedBox(width: 10),
-            Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis)),
-          ],
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 8),
+          content: Row(
+            children: [
+              const Icon(Icons.delivery_dining_rounded, color: Colors.lightGreenAccent),
+              const SizedBox(width: 10),
+              Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis)),
+            ],
+          ),
+          action: _index == availableTab ? null : SnackBarAction(label: 'Voir', onPressed: () => goTo(availableTab)),
         ),
-        action: _index == availableTab ? null : SnackBarAction(label: 'Voir', onPressed: () => goTo(availableTab)),
-      ));
+      );
   }
 
   void _onMine(List<Order> list) {
     final n = list.where((o) => !o.awaitingReceipt).length;
     if (n != _mineCount) setState(() => _mineCount = n);
+    // Ouverture de l'espace livreur, rafraîchissement : partage de position si une livraison est en cours.
+    DriverTracker.instance.syncWith(list, currentUserId(context));
   }
 
   void _onTaken(Order o) => goTo(mineTab);
 
   Widget _badgeIcon(IconData icon, int count) => Badge(
-        isLabelVisible: count > 0,
-        label: Text('$count'),
-        child: BounceOnChange(trigger: count, child: Icon(icon)),
-      );
+    isLabelVisible: count > 0,
+    label: Text('$count'),
+    child: BounceOnChange(trigger: count, child: Icon(icon)),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -133,36 +148,35 @@ class DriverShellState extends State<DriverShell> {
             active: _index == mineTab,
             onLoaded: _onMine,
           ),
-          DriverOrdersScreen(
-            scope: driverScopeHistory,
-            title: 'Historique',
-            active: _index == historyTab,
-          ),
+          DriverOrdersScreen(scope: driverScopeHistory, title: 'Historique', active: _index == historyTab),
           DriverProfileScreen(active: _index == profileTab),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: goTo,
-        destinations: [
-          NavigationDestination(
-            icon: _badgeIcon(Icons.delivery_dining_outlined, _availableCount),
-            selectedIcon: _badgeIcon(Icons.delivery_dining_rounded, _availableCount),
-            label: 'À livrer',
-          ),
-          NavigationDestination(
-            icon: _badgeIcon(Icons.two_wheeler_outlined, _mineCount),
-            selectedIcon: _badgeIcon(Icons.two_wheeler_rounded, _mineCount),
-            label: 'Mes livraisons',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.history_rounded),
-            label: 'Historique',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.person_outline_rounded),
-            selectedIcon: Icon(Icons.person_rounded),
-            label: 'Profil',
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const DriverTrackingBanner(),
+          NavigationBar(
+            selectedIndex: _index,
+            onDestinationSelected: goTo,
+            destinations: [
+              NavigationDestination(
+                icon: _badgeIcon(Icons.delivery_dining_outlined, _availableCount),
+                selectedIcon: _badgeIcon(Icons.delivery_dining_rounded, _availableCount),
+                label: 'À livrer',
+              ),
+              NavigationDestination(
+                icon: _badgeIcon(Icons.two_wheeler_outlined, _mineCount),
+                selectedIcon: _badgeIcon(Icons.two_wheeler_rounded, _mineCount),
+                label: 'Mes livraisons',
+              ),
+              const NavigationDestination(icon: Icon(Icons.history_rounded), label: 'Historique'),
+              const NavigationDestination(
+                icon: Icon(Icons.person_outline_rounded),
+                selectedIcon: Icon(Icons.person_rounded),
+                label: 'Profil',
+              ),
+            ],
           ),
         ],
       ),

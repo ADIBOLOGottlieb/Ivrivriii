@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../../providers/auth_provider.dart';
 import '../../services/admin_api.dart';
 import '../../utils/format.dart';
 import '../../utils/polling.dart';
 import '../../widgets/animations.dart';
+import '../../widgets/common.dart' show AppLogo;
 import '../shared/order_detail_screen.dart';
+import 'admin_layout.dart';
 import 'admin_menu_screen.dart';
 import 'admin_more_screen.dart';
 import 'admin_orders_screen.dart';
@@ -20,8 +24,9 @@ class AdminShell extends StatefulWidget {
 }
 
 class AdminShellState extends State<AdminShell> {
+  /// Identifiants des onglets (indépendants de leur position : le compte « cuisine » n'a pas de tableau de bord).
   static const dashboardTab = 0, ordersTab = 1, menuTab = 2, moreTab = 3;
-  int _index = 0;
+  int _index = 0; // identifiant de l'onglet affiché
   int _pendingCount = 0;
 
   // Paiements reçus : toutes les 20 s, jamais quand l'application est en arrière-plan.
@@ -37,6 +42,8 @@ class AdminShellState extends State<AdminShell> {
   void initState() {
     super.initState();
     paymentReviewCount.addListener(_onReviewCountChanged);
+    // Paiements : réservés au gérant (le compte « cuisine » recevrait un refus 403).
+    if (context.read<AuthProvider>().user?.isKitchen ?? false) return;
     _pollPayments();
     _paymentsPoller.startPolling('on');
   }
@@ -117,55 +124,103 @@ class AdminShellState extends State<AdminShell> {
     );
   }
 
+  /// Onglets visibles : le compte « cuisine » n'a ni tableau de bord ni argent.
+  List<int> _tabsFor(bool kitchen) =>
+      kitchen ? const [ordersTab, menuTab, moreTab] : const [dashboardTab, ordersTab, menuTab, moreTab];
+
+  Widget _page(int tab) => switch (tab) {
+        dashboardTab => DashboardScreen(active: _index == dashboardTab),
+        ordersTab => AdminOrdersScreen(active: _index == ordersTab),
+        menuTab => const AdminMenuScreen(),
+        _ => const AdminMoreScreen(),
+      };
+
+  Widget _badge(int count, IconData icon) => Badge(
+        isLabelVisible: count > 0,
+        label: Text('$count'),
+        child: BounceOnChange(trigger: count, child: Icon(icon)),
+      );
+
+  /// Icône, icône sélectionnée et libellé d'un onglet.
+  (Widget, Widget, String) _destination(int tab, int reviewCount) => switch (tab) {
+        dashboardTab => (
+            const Icon(Icons.dashboard_outlined),
+            const Icon(Icons.dashboard_rounded),
+            'Tableau de bord',
+          ),
+        ordersTab => (
+            _badge(_pendingCount, Icons.receipt_long_outlined),
+            _badge(_pendingCount, Icons.receipt_long_rounded),
+            'Commandes',
+          ),
+        menuTab => (
+            const Icon(Icons.restaurant_menu_outlined),
+            const Icon(Icons.restaurant_menu_rounded),
+            'Menu',
+          ),
+        // Badge : paiements mobile money à vérifier (accès via « Plus »).
+        _ => (
+            _badge(reviewCount, Icons.more_horiz_rounded),
+            _badge(reviewCount, Icons.more_horiz_rounded),
+            'Plus',
+          ),
+      };
+
   @override
   Widget build(BuildContext context) {
-    final reviewCount = paymentReviewCount.value;
+    final kitchen = context.watch<AuthProvider>().user?.isKitchen ?? false;
+    final reviewCount = kitchen ? 0 : paymentReviewCount.value;
+    final tabs = _tabsFor(kitchen);
+    // Onglet courant absent pour ce rôle (ex. tableau de bord en cuisine) : premier onglet visible.
+    if (!tabs.contains(_index)) _index = tabs.first;
+    final selected = tabs.indexOf(_index);
+    final destinations = [for (final t in tabs) _destination(t, reviewCount)];
+
+    final body = FadeIndexedStack(
+      index: selected,
+      children: [for (final t in tabs) _page(t)],
+    );
+
+    final width = MediaQuery.sizeOf(context).width;
+    if (width >= adminTabletBreakpoint) {
+      // Tablette : barre de navigation latérale (étendue sur grand écran) au lieu de la barre du bas.
+      final extended = width >= adminRailExtendedBreakpoint;
+      return Scaffold(
+        body: SafeArea(
+          right: false,
+          bottom: false,
+          child: Row(
+            children: [
+              NavigationRail(
+                extended: extended,
+                minExtendedWidth: 220,
+                selectedIndex: selected,
+                onDestinationSelected: (i) => goTo(tabs[i]),
+                labelType: extended ? NavigationRailLabelType.none : NavigationRailLabelType.all,
+                leading: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: AppLogo(size: extended ? 56 : 44),
+                ),
+                destinations: [
+                  for (final d in destinations)
+                    NavigationRailDestination(icon: d.$1, selectedIcon: d.$2, label: Text(d.$3)),
+                ],
+              ),
+              const VerticalDivider(width: 1, thickness: 1),
+              Expanded(child: body),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
-      body: FadeIndexedStack(
-        index: _index,
-        children: [
-          DashboardScreen(active: _index == dashboardTab),
-          AdminOrdersScreen(active: _index == ordersTab),
-          const AdminMenuScreen(),
-          const AdminMoreScreen(),
-        ],
-      ),
+      body: body,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: goTo,
+        selectedIndex: selected,
+        onDestinationSelected: (i) => goTo(tabs[i]),
         destinations: [
-          const NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard_rounded),
-            label: 'Tableau de bord',
-          ),
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: _pendingCount > 0,
-              label: Text('$_pendingCount'),
-              child: BounceOnChange(trigger: _pendingCount, child: const Icon(Icons.receipt_long_outlined)),
-            ),
-            selectedIcon: Badge(
-              isLabelVisible: _pendingCount > 0,
-              label: Text('$_pendingCount'),
-              child: BounceOnChange(trigger: _pendingCount, child: const Icon(Icons.receipt_long_rounded)),
-            ),
-            label: 'Commandes',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.restaurant_menu_outlined),
-            selectedIcon: Icon(Icons.restaurant_menu_rounded),
-            label: 'Menu',
-          ),
-          // Badge : paiements mobile money à vérifier (accès via « Plus »).
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: reviewCount > 0,
-              label: Text('$reviewCount'),
-              child: BounceOnChange(trigger: reviewCount, child: const Icon(Icons.more_horiz_rounded)),
-            ),
-            label: 'Plus',
-          ),
+          for (final d in destinations) NavigationDestination(icon: d.$1, selectedIcon: d.$2, label: d.$3),
         ],
       ),
     );

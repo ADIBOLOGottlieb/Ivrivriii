@@ -20,6 +20,7 @@ import 'screens/onboarding_screen.dart';
 import 'screens/shared/order_detail_screen.dart';
 import 'screens/splash_screen.dart';
 import 'services/api.dart';
+import 'services/error_reporter.dart';
 import 'services/maps_link.dart';
 import 'services/push_service.dart';
 import 'services/shared_location.dart';
@@ -33,6 +34,10 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Plantages remontés au serveur (journal du gérant) : jamais bloquant. Pas de runZonedGuarded :
+  // PlatformDispatcher.onError attrape déjà les erreurs asynchrones, sans souci de zone.
+  ErrorReporter.instance.install();
 
   // Réception des positions partagées depuis l'app Google Maps (sans bloquer le démarrage).
   unawaited(SharedLocationService.instance.init().catchError((Object e) {

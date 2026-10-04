@@ -10,6 +10,7 @@ import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
 import '../shared/order_detail_screen.dart';
 import 'checkout_screen.dart';
+import 'opening_hours_banner.dart';
 import 'client_shell.dart';
 
 class CartScreen extends StatefulWidget {
@@ -29,16 +30,23 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   /// Réglages du restaurant (frais de livraison, % mobile money) pour l'estimation.
-  Future<void> _loadSettings() async {
+  Future<void> _loadSettings({bool fresh = false}) async {
     try {
-      final s = await Api.instance.settings();
+      final s = await Api.instance.settings(fresh: fresh);
       if (mounted) setState(() => _settings = s);
+      // « Fermé » lu dans le cache : on vérifie auprès du serveur avant de bloquer la commande.
+      if (!fresh && !s.isOpen && mounted) await _loadSettings(fresh: true);
     } catch (_) {
       // Sans réglages, on n'affiche que le sous-total.
     }
   }
 
   Future<void> _checkout() async {
+    final s = _settings;
+    if (s != null && !s.isOpen) {
+      showMessage(context, closedOrderMessage(s), error: true);
+      return;
+    }
     final order = await Navigator.push<Order>(
       context,
       MaterialPageRoute(builder: (_) => const CheckoutScreen()),
@@ -172,11 +180,19 @@ class _CartScreenState extends State<CartScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Fermé (« ouvre lundi à 10:00 ») ou fermeture proche.
+                    if (_settings != null)
+                      OpeningHoursBanner(
+                        settings: _settings!,
+                        margin: const EdgeInsets.only(bottom: 10),
+                        onExpired: () => _loadSettings(fresh: true),
+                      ),
                     _Summary(subtotal: cart.subtotal, count: cart.count, settings: _settings),
                     const SizedBox(height: 12),
                     FilledButton(
-                      onPressed: _checkout,
-                      child: const Text('Passer la commande'),
+                      // Restaurant fermé : commande impossible (bandeau ci-dessus).
+                      onPressed: _settings != null && !_settings!.isOpen ? null : _checkout,
+                      child: Text(_settings != null && !_settings!.isOpen ? 'Restaurant fermé' : 'Passer la commande'),
                     ),
                   ],
                 ),
@@ -233,7 +249,10 @@ class _Summary extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.red)),
             style: totalStyle,
           );
-      children.add(row('Livraison (si livraison)', Text(formatPrice(delivery), style: muted)));
+      children.add(row(
+        s.feeByDistance ? 'Livraison (dès, selon la distance)' : 'Livraison (si livraison)',
+        Text(formatPrice(delivery), style: muted),
+      ));
       if (flooz == mixx) {
         children.addAll([
           row('Frais mobile money (${formatPercent(flooz)} %)',

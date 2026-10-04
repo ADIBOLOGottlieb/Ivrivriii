@@ -7,6 +7,7 @@ import '../../models.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api.dart';
 import '../../services/driver_api.dart';
+import '../../services/driver_tracker.dart';
 import '../../services/order_events.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
@@ -21,7 +22,8 @@ String driverDialNumber(String phone) {
 /// Numéro lisible : « 90 12 34 56 » pour un numéro togolais à 8 chiffres.
 String formatPhoneDisplay(String phone) {
   final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
-  String pairs(String d) => [for (var i = 0; i < d.length; i += 2) d.substring(i, i + 2 > d.length ? d.length : i + 2)].join(' ');
+  String pairs(String d) =>
+      [for (var i = 0; i < d.length; i += 2) d.substring(i, i + 2 > d.length ? d.length : i + 2)].join(' ');
   if (digits.length == 8) return pairs(digits);
   if (digits.length == 11 && digits.startsWith('228')) return '+228 ${pairs(digits.substring(3))}';
   return phone.trim();
@@ -81,7 +83,10 @@ Future<void> callClient(BuildContext context, Order o) async {
   }
   var ok = false;
   try {
-    ok = await launchUrl(Uri(scheme: 'tel', path: number), mode: LaunchMode.externalApplication);
+    ok = await launchUrl(
+      Uri(scheme: 'tel', path: number),
+      mode: LaunchMode.externalApplication,
+    );
   } catch (_) {}
   if (!ok && context.mounted) showMessage(context, 'Impossible de lancer l\'appel vers $number.', error: true);
 }
@@ -123,19 +128,21 @@ Future<Order?> _run(
   }
 }
 
-/// « Je prends cette livraison ».
-Future<Order?> takeDelivery(BuildContext context, Order o) => _run(
-      context,
-      () => takeOrder(o.id),
-      success: 'Livraison n°${o.id} prise en charge. Appuyez sur la carte pour lancer Google Maps.',
-      conflict: 'Trop tard : cette livraison a déjà été prise par un autre livreur.',
-    );
+/// « Je prends cette livraison » : la position commence à être partagée avec le client.
+Future<Order?> takeDelivery(BuildContext context, Order o) async {
+  final taken = await _run(
+    context,
+    () => takeOrder(o.id),
+    success: 'Livraison n°${o.id} prise en charge. Appuyez sur la carte pour lancer Google Maps.',
+    conflict: 'Trop tard : cette livraison a déjà été prise par un autre livreur.',
+  );
+  if (taken != null) DriverTracker.instance.start();
+  return taken;
+}
 
 /// « Livraison faite » (avec confirmation).
 Future<Order?> markDeliveryDone(BuildContext context, Order o) async {
-  final cash = isCashOrder(o)
-      ? '\n\nVous devez avoir encaissé ${formatPrice(o.total)} en espèces.'
-      : '';
+  final cash = isCashOrder(o) ? '\n\nVous devez avoir encaissé ${formatPrice(o.total)} en espèces.' : '';
   final ok = await confirmDialog(
     context,
     'Livraison faite ?',
@@ -144,11 +151,15 @@ Future<Order?> markDeliveryDone(BuildContext context, Order o) async {
     confirm: 'Oui, livrée',
   );
   if (!ok || !context.mounted) return null;
-  return _run(
+  final me = currentUserId(context);
+  final updated = await _run(
     context,
     () => markDelivered(o.id),
     success: 'Livraison n°${o.id} marquée comme faite. En attente du « Reçu » du client.',
   );
+  // Plus de livraison en cours : le partage de position s'arrête.
+  if (updated != null) DriverTracker.instance.refresh(me);
+  return updated;
 }
 
 /// « Rendre la livraison » (avec confirmation) : elle repart dans « À livrer ».
@@ -161,5 +172,8 @@ Future<Order?> releaseDelivery(BuildContext context, Order o) async {
     danger: true,
   );
   if (!ok || !context.mounted) return null;
-  return _run(context, () => releaseOrder(o.id), success: 'Livraison n°${o.id} rendue.');
+  final me = currentUserId(context);
+  final updated = await _run(context, () => releaseOrder(o.id), success: 'Livraison n°${o.id} rendue.');
+  if (updated != null) DriverTracker.instance.refresh(me);
+  return updated;
 }

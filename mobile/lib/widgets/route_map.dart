@@ -1,8 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../models.dart';
 import '../services/geo_service.dart';
 import '../theme.dart';
 
@@ -29,21 +32,84 @@ Polyline routePolyline(List<LatLng> points, {bool fallback = false}) {
 }
 
 /// Marqueur du restaurant (pastille avec vitrine rouge).
-Marker restaurantMarker(LatLng point) => Marker(
-      point: point,
-      width: 38,
-      height: 38,
-      child: const RestaurantPin(),
-    );
+Marker restaurantMarker(LatLng point) => Marker(point: point, width: 38, height: 38, child: const RestaurantPin());
 
 /// Marqueur du point de livraison (épingle dont la pointe désigne le point).
 Marker deliveryMarker(LatLng point) => Marker(
-      point: point,
-      width: 40,
-      height: 40,
-      alignment: Alignment.topCenter,
-      child: const Icon(Icons.location_on_rounded, size: 40, color: AppColors.darkRed),
+  point: point,
+  width: 40,
+  height: 40,
+  alignment: Alignment.topCenter,
+  child: const Icon(Icons.location_on_rounded, size: 40, color: AppColors.darkRed),
+);
+
+/// Marqueur du livreur (suivi en direct), centré sur sa position.
+Marker driverMarker(LatLng point, {double? heading, bool stale = false}) => Marker(
+  point: point,
+  width: 56,
+  height: 56,
+  child: DriverPin(heading: heading, stale: stale),
+);
+
+/// Scooter dans un cercle rouge ; une flèche autour indique le sens de la marche (cap GPS).
+class DriverPin extends StatelessWidget {
+  /// Cap en degrés (0 = nord), null si inconnu (livreur à l'arrêt).
+  final double? heading;
+
+  /// Dernière position ancienne : marqueur atténué.
+  final bool stale;
+
+  const DriverPin({super.key, this.heading, this.stale = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = stale ? const Color(0xFF8A7C77) : AppColors.red;
+    return Semantics(
+      label: 'Position du livreur',
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Halo : le livreur reste repérable sur tous les fonds de carte.
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color.withValues(alpha: 0.18)),
+          ),
+          if (heading != null)
+            Transform.rotate(
+              angle: heading! * math.pi / 180,
+              child: SizedBox(
+                width: 56,
+                height: 56,
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: Icon(
+                    Icons.navigation_rounded,
+                    size: 18,
+                    color: color,
+                    shadows: const [Shadow(color: Colors.white, blurRadius: 3)],
+                  ),
+                ),
+              ),
+            ),
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2.5),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 5, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: const Center(child: Icon(Icons.delivery_dining_rounded, size: 22, color: Colors.white)),
+          ),
+        ],
+      ),
     );
+  }
+}
 
 class RestaurantPin extends StatelessWidget {
   const RestaurantPin({super.key});
@@ -64,11 +130,11 @@ class RestaurantPin extends StatelessWidget {
 
 /// Lien Google Maps « itinéraire » de [from] à [to].
 Uri googleMapsDirectionsUri(LatLng from, LatLng to) => Uri.parse(
-      'https://www.google.com/maps/dir/?api=1'
-      '&origin=${from.latitude.toStringAsFixed(6)},${from.longitude.toStringAsFixed(6)}'
-      '&destination=${to.latitude.toStringAsFixed(6)},${to.longitude.toStringAsFixed(6)}'
-      '&travelmode=driving',
-    );
+  'https://www.google.com/maps/dir/?api=1'
+  '&origin=${from.latitude.toStringAsFixed(6)},${from.longitude.toStringAsFixed(6)}'
+  '&destination=${to.latitude.toStringAsFixed(6)},${to.longitude.toStringAsFixed(6)}'
+  '&travelmode=driving',
+);
 
 /// Petite carte d'itinéraire (restaurant → livraison) à placer dans une page qui défile :
 /// un doigt fait défiler la page, deux doigts déplacent / zooment la carte.
@@ -79,12 +145,16 @@ class RouteMap extends StatefulWidget {
   final String? fromLabel;
   final String? toLabel;
 
+  /// Position du livreur (suivi en direct) : scooter animé, carte cadrée sur le livreur et le client.
+  final DriverLocation? driver;
+
   const RouteMap({
     required this.from,
     required this.to,
     this.height = 220,
     this.fromLabel,
     this.toLabel,
+    this.driver,
     super.key,
   });
 
@@ -92,10 +162,21 @@ class RouteMap extends StatefulWidget {
   State<RouteMap> createState() => _RouteMapState();
 }
 
-class _RouteMapState extends State<RouteMap> {
+class _RouteMapState extends State<RouteMap> with SingleTickerProviderStateMixin {
   final _geo = GeoService.instance;
   final _map = MapController();
   bool _mapReady = false;
+
+  // Livreur : le marqueur glisse en ~1 s de l'ancienne position vers la nouvelle.
+  late final AnimationController _move = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
+  late final Animation<double> _moveCurve = CurvedAnimation(parent: _move, curve: Curves.easeInOut);
+  LatLng? _driverFrom;
+  LatLng? _driverTo;
+  double? _headingFrom;
+  double? _headingTo;
+
+  /// L'utilisateur a déplacé / zoomé la carte : on ne recadre plus tout seul (bouton « Recentrer »).
+  bool _userMoved = false;
 
   RouteResult? _route;
   bool _loading = true;
@@ -108,6 +189,11 @@ class _RouteMapState extends State<RouteMap> {
   @override
   void initState() {
     super.initState();
+    final d = widget.driver;
+    if (d != null) {
+      _driverFrom = _driverTo = LatLng(d.lat, d.lng);
+      _headingFrom = _headingTo = d.heading;
+    }
     _initTiles();
     _loadRoute();
   }
@@ -122,12 +208,77 @@ class _RouteMapState extends State<RouteMap> {
         if (mounted) _fit();
       });
     }
+    _onDriverChanged(old.driver);
   }
 
   @override
   void dispose() {
+    _move.dispose();
     _map.dispose();
     super.dispose();
+  }
+
+  /// Nouvelle position du livreur : animation depuis la position affichée, puis recadrage.
+  void _onDriverChanged(DriverLocation? old) {
+    final d = widget.driver;
+    if (d == null) {
+      if (_driverTo != null) {
+        _move.stop();
+        _driverFrom = _driverTo = null;
+        _headingFrom = _headingTo = null;
+        _autoFit();
+      }
+      return;
+    }
+    final target = LatLng(d.lat, d.lng);
+    if (target == _driverTo && d.heading == _headingTo) return;
+    final appeared = _driverTo == null;
+    if (appeared) {
+      _driverFrom = _driverTo = target;
+      _headingFrom = _headingTo = d.heading;
+    } else {
+      _driverFrom = _driverPosition; // part de là où le marqueur est affiché (animation en cours comprise)
+      _headingFrom = _driverHeading;
+      _driverTo = target;
+      _headingTo = d.heading;
+      _move.forward(from: 0);
+    }
+    _autoFit();
+  }
+
+  LatLng? get _driverPosition {
+    final a = _driverFrom, b = _driverTo;
+    if (a == null || b == null) return b;
+    final t = _moveCurve.value;
+    if (t >= 1) return b;
+    return LatLng(a.latitude + (b.latitude - a.latitude) * t, a.longitude + (b.longitude - a.longitude) * t);
+  }
+
+  /// Cap interpolé par le plus court chemin (350° → 10° tourne de 20°, pas de 340°).
+  double? get _driverHeading {
+    final a = _headingFrom, b = _headingTo;
+    if (b == null) return null;
+    if (a == null) return b;
+    final t = _moveCurve.value;
+    final delta = ((b - a + 540) % 360) - 180;
+    return (a + delta * t) % 360;
+  }
+
+  /// Recadrage automatique, sauf si l'utilisateur a déplacé la carte.
+  void _autoFit() {
+    if (_userMoved) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_userMoved) _fit();
+    });
+  }
+
+  void _recenter() {
+    if (_userMoved) setState(() => _userMoved = false);
+    _fit();
+  }
+
+  void _onPositionChanged(MapCamera camera, bool hasGesture) {
+    if (hasGesture && !_userMoved && widget.driver != null) setState(() => _userMoved = true);
   }
 
   Future<void> _initTiles() async {
@@ -183,7 +334,7 @@ class _RouteMapState extends State<RouteMap> {
       _route = r;
       _loading = false;
     });
-    _fit();
+    if (!_userMoved) _fit();
   }
 
   void _retry() {
@@ -191,13 +342,15 @@ class _RouteMapState extends State<RouteMap> {
     _loadRoute();
   }
 
-  List<LatLng> get _fitPoints => [widget.from, widget.to, ...?_route?.points];
+  /// Suivi en direct : cadrage sur le livreur et le client ; sinon tout l'itinéraire.
+  List<LatLng> get _fitPoints {
+    final driver = _driverTo;
+    if (driver != null) return [driver, widget.to];
+    return [widget.from, widget.to, ...?_route?.points];
+  }
 
-  CameraFit get _cameraFit => CameraFit.coordinates(
-        coordinates: _fitPoints,
-        padding: const EdgeInsets.fromLTRB(36, 44, 36, 28),
-        maxZoom: 17,
-      );
+  CameraFit get _cameraFit =>
+      CameraFit.coordinates(coordinates: _fitPoints, padding: const EdgeInsets.fromLTRB(36, 44, 36, 28), maxZoom: 17);
 
   void _fit() {
     if (!_mapReady) return;
@@ -269,11 +422,23 @@ class _RouteMapState extends State<RouteMap> {
                       flags: InteractiveFlag.pinchZoom | InteractiveFlag.pinchMove | InteractiveFlag.doubleTapZoom,
                     ),
                     onMapReady: _onMapReady,
+                    onPositionChanged: _onPositionChanged,
                   ),
                   children: [
                     _tiles(),
                     if (!_loading || route != null) PolylineLayer(polylines: [line]),
                     MarkerLayer(markers: [restaurantMarker(widget.from), deliveryMarker(widget.to)]),
+                    if (_driverTo != null)
+                      AnimatedBuilder(
+                        animation: _move,
+                        builder: (context, _) {
+                          final p = _driverPosition;
+                          if (p == null) return const SizedBox.shrink();
+                          return MarkerLayer(
+                            markers: [driverMarker(p, heading: _driverHeading, stale: widget.driver?.isStale ?? false)],
+                          );
+                        },
+                      ),
                     if (_tileSession == null)
                       SimpleAttributionWidget(
                         source: const Text('OpenStreetMap', style: TextStyle(fontSize: 10.5)),
@@ -315,7 +480,7 @@ class _RouteMapState extends State<RouteMap> {
                     clipBehavior: Clip.antiAlias,
                     child: IconButton(
                       tooltip: 'Recentrer',
-                      onPressed: _fit,
+                      onPressed: _recenter,
                       color: scheme.onSurface,
                       constraints: const BoxConstraints.tightFor(width: 36, height: 36),
                       padding: EdgeInsets.zero,
@@ -323,6 +488,27 @@ class _RouteMapState extends State<RouteMap> {
                     ),
                   ),
                 ),
+                // Carte déplacée à la main pendant le suivi : le recadrage automatique est suspendu.
+                if (_userMoved && _driverTo != null)
+                  Positioned(
+                    bottom: 12,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.red,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(0, 36),
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          elevation: 3,
+                        ),
+                        onPressed: _recenter,
+                        icon: const Icon(Icons.my_location_rounded, size: 18),
+                        label: const Text('Recentrer'),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -330,8 +516,11 @@ class _RouteMapState extends State<RouteMap> {
         const SizedBox(height: 10),
         Row(
           children: [
-            Icon(failed ? Icons.route_outlined : Icons.route_rounded,
-                size: 20, color: failed ? scheme.onSurfaceVariant : AppColors.red),
+            Icon(
+              failed ? Icons.route_outlined : Icons.route_rounded,
+              size: 20,
+              color: failed ? scheme.onSurfaceVariant : AppColors.red,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: _loading && route == null
@@ -339,8 +528,10 @@ class _RouteMapState extends State<RouteMap> {
                       children: [
                         const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
                         const SizedBox(width: 8),
-                        Text('Calcul de l\'itinéraire…',
-                            style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+                        Text(
+                          'Calcul de l\'itinéraire…',
+                          style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+                        ),
                       ],
                     )
                   : Text(
@@ -352,16 +543,13 @@ class _RouteMapState extends State<RouteMap> {
                       ),
                     ),
             ),
-            if (failed)
-              TextButton(onPressed: _retry, child: const Text('Réessayer')),
+            if (failed) TextButton(onPressed: _retry, child: const Text('Réessayer')),
           ],
         ),
         if (widget.fromLabel != null || widget.toLabel != null) ...[
           const SizedBox(height: 6),
-          if (widget.fromLabel != null)
-            _LegendRow(icon: Icons.storefront_rounded, text: widget.fromLabel!),
-          if (widget.toLabel != null)
-            _LegendRow(icon: Icons.location_on_rounded, text: widget.toLabel!),
+          if (widget.fromLabel != null) _LegendRow(icon: Icons.storefront_rounded, text: widget.fromLabel!),
+          if (widget.toLabel != null) _LegendRow(icon: Icons.location_on_rounded, text: widget.toLabel!),
         ],
         const SizedBox(height: 10),
         OutlinedButton.icon(

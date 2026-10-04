@@ -17,6 +17,8 @@ class AppUser {
   final String? momoPhone; // numéro mobile money préféré, pré-rempli au paiement
   final bool phoneVerified; // numéro vérifié par code SMS
   final DateTime? termsAcceptedAt; // acceptation des CGU et de la politique de confidentialité
+  /// Personnel (role 'admin') : 'manager' (tout) ou 'kitchen' (commandes seulement) ; null sinon.
+  final String? adminLevel;
 
   AppUser({
     required this.id,
@@ -29,10 +31,16 @@ class AppUser {
     this.momoPhone,
     this.phoneVerified = false,
     this.termsAcceptedAt,
+    this.adminLevel,
   });
 
+  /// Personnel du restaurant (gérant ou cuisine) : accès à l'espace admin.
   bool get isAdmin => role == 'admin';
   bool get isDriver => role == 'driver';
+  /// Compte « cuisine » : commandes, disponibilité des plats, livreurs (sans argent ni réglages).
+  bool get isKitchen => isAdmin && adminLevel == 'kitchen';
+  /// Gérant : accès complet (argent, réglages, personnel). Ancien compte admin sans niveau = gérant.
+  bool get isManager => isAdmin && adminLevel != 'kitchen';
 
   factory AppUser.fromJson(Map<String, dynamic> j) => AppUser(
         id: _int(j['id']),
@@ -45,6 +53,125 @@ class AppUser {
         momoPhone: j['momo_phone'],
         phoneVerified: j['phone_verified'] == true || j['phone_verified'] == 1,
         termsAcceptedAt: j['terms_accepted_at'] == null ? null : _parseDate(j['terms_accepted_at']),
+        adminLevel: j['admin_level'],
+      );
+}
+
+double? _double(dynamic v) => v is num ? v.toDouble() : null;
+
+/// Dernière position connue du livreur (suivi en direct, livraison en cours seulement).
+class DriverLocation {
+  final double lat;
+  final double lng;
+  final double? accuracy; // mètres
+  final double? heading; // degrés (0 = nord)
+  final DateTime updatedAt;
+
+  DriverLocation({required this.lat, required this.lng, this.accuracy, this.heading, required this.updatedAt});
+
+  /// Position de plus de 2 minutes : affichée comme « dernière position connue ».
+  bool get isStale => DateTime.now().difference(updatedAt) > const Duration(minutes: 2);
+
+  static DriverLocation? fromJson(dynamic j) {
+    if (j is! Map) return null;
+    final lat = _double(j['lat']);
+    final lng = _double(j['lng']);
+    if (lat == null || lng == null) return null;
+    return DriverLocation(
+      lat: lat,
+      lng: lng,
+      accuracy: _double(j['accuracy']),
+      heading: _double(j['heading']),
+      updatedAt: _parseDate(j['updated_at']),
+    );
+  }
+}
+
+/// Devis des frais de livraison pour une position (GET /api/delivery/quote).
+class DeliveryQuote {
+  final int fee;
+  final double? distanceKm; // null si la distance est inconnue (position du restaurant non définie)
+  final String mode; // 'fixed' ou 'distance'
+  final bool withinZone;
+  final double? maxKm; // null = pas de limite
+  final String? message; // explication si hors zone
+
+  DeliveryQuote({required this.fee, this.distanceKm, this.mode = 'fixed', this.withinZone = true, this.maxKm, this.message});
+
+  factory DeliveryQuote.fromJson(Map<String, dynamic> j) => DeliveryQuote(
+        fee: _int(j['fee']),
+        distanceKm: _double(j['distance_km']),
+        mode: j['mode'] == 'distance' ? 'distance' : 'fixed',
+        withinZone: j['within_zone'] != false,
+        maxKm: _double(j['max_km']),
+        message: j['message'],
+      );
+}
+
+/// Membre du personnel (vue gérant : GET /api/admin/staff).
+class StaffMember {
+  final int id;
+  final String name;
+  final String phone;
+  final String adminLevel; // 'manager' ou 'kitchen'
+  final bool active;
+  final DateTime createdAt;
+
+  StaffMember({
+    required this.id,
+    required this.name,
+    required this.phone,
+    required this.adminLevel,
+    this.active = true,
+    required this.createdAt,
+  });
+
+  bool get isKitchen => adminLevel == 'kitchen';
+
+  factory StaffMember.fromJson(Map<String, dynamic> j) => StaffMember(
+        id: _int(j['id']),
+        name: j['name'] ?? '',
+        phone: j['phone'] ?? '',
+        adminLevel: j['admin_level'] == 'kitchen' ? 'kitchen' : 'manager',
+        active: j['active'] != false && j['active'] != 0,
+        createdAt: _parseDate(j['created_at']),
+      );
+}
+
+/// Erreur enregistrée (plantage de l'app ou erreur serveur) : GET /api/admin/errors.
+class ErrorLogEntry {
+  final int id;
+  final String source; // 'app' ou 'server'
+  final String message;
+  final String? stack;
+  final String? context; // écran, chemin d'API...
+  final String? appVersion;
+  final String? platform;
+  final int? userId;
+  final DateTime createdAt;
+
+  ErrorLogEntry({
+    required this.id,
+    required this.source,
+    required this.message,
+    this.stack,
+    this.context,
+    this.appVersion,
+    this.platform,
+    this.userId,
+    required this.createdAt,
+  });
+
+  factory ErrorLogEntry.fromJson(Map<String, dynamic> j) => ErrorLogEntry(
+        id: _int(j['id']),
+        source: j['source'] == 'server' ? 'server' : 'app',
+        message: j['message'] ?? '',
+        stack: j['stack'],
+        context: j['context'],
+        appVersion: j['app_version'],
+        platform: j['platform'],
+        userId: j['user_id'] == null ? null : _int(j['user_id']),
+        createdAt: _parseDate(j['created_at']),
       );
 }
 
@@ -216,6 +343,12 @@ class Order {
   final DateTime? pickedUpAt;
   final DateTime? driverDeliveredAt;
   final DateTime? receivedAt;
+  /// Suivi en direct : position du livreur (livraison en cours, avant « Livraison faite »), sinon null.
+  final DriverLocation? driverLocation;
+  /// Arrivée estimée en minutes (calcul serveur à partir de la position du livreur), sinon null.
+  final int? etaMinutes;
+  /// Distance restaurant → client estimée par le serveur (km), utilisée pour les frais au kilomètre.
+  final double? deliveryDistanceKm;
 
   Order({
     required this.id,
@@ -246,7 +379,13 @@ class Order {
     this.pickedUpAt,
     this.driverDeliveredAt,
     this.receivedAt,
+    this.driverLocation,
+    this.etaMinutes,
+    this.deliveryDistanceKm,
   });
+
+  /// Le client peut suivre le livreur en direct sur la carte.
+  bool get isTrackable => status == 'delivering' && driverDeliveredAt == null && driverLocation != null;
 
   bool get isDelivery => mode == 'delivery';
   bool get isFinished => status == 'delivered' || status == 'cancelled';
@@ -292,6 +431,9 @@ class Order {
         pickedUpAt: j['picked_up_at'] == null ? null : _parseDate(j['picked_up_at']),
         driverDeliveredAt: j['driver_delivered_at'] == null ? null : _parseDate(j['driver_delivered_at']),
         receivedAt: j['received_at'] == null ? null : _parseDate(j['received_at']),
+        driverLocation: DriverLocation.fromJson(j['driver_location']),
+        etaMinutes: j['eta_minutes'] == null ? null : _int(j['eta_minutes']),
+        deliveryDistanceKm: _double(j['delivery_distance_km']),
       );
 }
 
@@ -350,6 +492,18 @@ class AppSettings {
   final String paymentProvider; // simulation, paygate, kadev...
   final int maxQuantityPerItem;
   final int momoUnpaidCancelMinutes; // annulation auto d'une commande mobile money non payée
+  // Ouverture : isOpen = état effectif (interrupteur manuel ET horaires) ; manualOpen = interrupteur.
+  final bool manualOpen;
+  final bool hoursEnabled; // horaires automatiques actifs
+  /// Horaires par jour : clés mon, tue, wed, thu, fri, sat, sun → plages [['10:00', '22:00'], ...] (heure de Lomé).
+  final Map<String, List<List<String>>> openingHours;
+  final DateTime? nextOpeningAt; // prochaine ouverture (si fermé), sinon null
+  final DateTime? nextClosingAt; // prochaine fermeture (si ouvert avec horaires), sinon null
+  // Frais de livraison : 'fixed' (deliveryFee partout) ou 'distance' (deliveryFee + perKm au-delà de freeKm).
+  final String deliveryFeeMode;
+  final int deliveryFeePerKm;
+  final double deliveryFreeKm;
+  final double deliveryMaxKm; // 0 = pas de limite
 
   AppSettings({
     required this.deliveryFee,
@@ -371,8 +525,40 @@ class AppSettings {
     this.paymentProvider = 'simulation',
     this.maxQuantityPerItem = 999,
     this.momoUnpaidCancelMinutes = 30,
-  }) : paymentFeePercentByOperator =
-            paymentFeePercentByOperator ?? {'flooz': paymentFeePercent, 'mixx': paymentFeePercent};
+    bool? manualOpen,
+    this.hoursEnabled = false,
+    Map<String, List<List<String>>>? openingHours,
+    this.nextOpeningAt,
+    this.nextClosingAt,
+    this.deliveryFeeMode = 'fixed',
+    this.deliveryFeePerKm = 0,
+    this.deliveryFreeKm = 0,
+    this.deliveryMaxKm = 0,
+  })  : paymentFeePercentByOperator =
+            paymentFeePercentByOperator ?? {'flooz': paymentFeePercent, 'mixx': paymentFeePercent},
+        manualOpen = manualOpen ?? isOpen,
+        openingHours = openingHours ?? const {};
+
+  static const weekDays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+  static Map<String, List<List<String>>> _parseHours(dynamic raw) {
+    final out = <String, List<List<String>>>{};
+    if (raw is! Map) return out;
+    for (final day in weekDays) {
+      final ranges = raw[day];
+      if (ranges is! List) continue;
+      out[day] = [
+        for (final r in ranges)
+          if (r is List && r.length == 2) ['${r[0]}', '${r[1]}'],
+      ];
+    }
+    return out;
+  }
+
+  static DateTime? _parseIso(dynamic v) => v is String ? DateTime.tryParse(v)?.toLocal() : null;
+
+  /// Frais au kilomètre actifs.
+  bool get feeByDistance => deliveryFeeMode == 'distance';
 
   /// Frais fixés par l'agrégateur : le réglage admin ne s'applique pas.
   bool get feesFromAggregator => paymentFeeSource == 'aggregator';
@@ -410,13 +596,29 @@ class AppSettings {
       maxQuantityPerItem: j['max_quantity_per_item'] == null ? 999 : _int(j['max_quantity_per_item']),
       momoUnpaidCancelMinutes:
           j['momo_unpaid_cancel_minutes'] == null ? 30 : _int(j['momo_unpaid_cancel_minutes']),
+      manualOpen: j['manual_open'] == null ? j['is_open'] == true : j['manual_open'] == true,
+      hoursEnabled: j['hours_enabled'] == true,
+      openingHours: _parseHours(j['opening_hours']),
+      nextOpeningAt: _parseIso(j['next_opening_at']),
+      nextClosingAt: _parseIso(j['next_closing_at']),
+      deliveryFeeMode: j['delivery_fee_mode'] == 'distance' ? 'distance' : 'fixed',
+      deliveryFeePerKm: _int(j['delivery_fee_per_km']),
+      deliveryFreeKm: _double(j['delivery_free_km']) ?? 0,
+      deliveryMaxKm: _double(j['delivery_max_km']) ?? 0,
     );
   }
 
   Map<String, dynamic> toJson() => {
         'delivery_fee': deliveryFee,
         'min_order': minOrder,
-        'is_open': isOpen,
+        // Interrupteur manuel (l'état effectif dépend aussi des horaires).
+        'is_open': manualOpen,
+        'hours_enabled': hoursEnabled,
+        'opening_hours': openingHours,
+        'delivery_fee_mode': deliveryFeeMode,
+        'delivery_fee_per_km': deliveryFeePerKm,
+        'delivery_free_km': deliveryFreeKm,
+        'delivery_max_km': deliveryMaxKm,
         'restaurant_phone': restaurantPhone,
         'restaurant_address': restaurantAddress,
         'restaurant_lat': restaurantLat,
@@ -452,6 +654,17 @@ class AdminStats {
   final int customers;
   final List<TopProduct> topProducts;
   final List<DailyStat> last7Days;
+  /// Même jour la semaine dernière, jusqu'à la même heure (comparaison équitable).
+  final int lastWeekOrders;
+  final int lastWeekRevenue;
+  /// Évolution vs même jour la semaine dernière (%), null sans point de comparaison.
+  final double? revenueChangePercent;
+  final double? ordersChangePercent;
+  /// Commandes par heure (index 0 à 23, heure de Lomé) sur les 30 derniers jours.
+  final List<int> hourly;
+  /// Créneau de 2 h le plus chargé (ex. 12 → 14), null sans données.
+  final int? peakStartHour;
+  final int? peakEndHour;
 
   AdminStats({
     required this.todayOrders,
@@ -463,6 +676,13 @@ class AdminStats {
     required this.customers,
     required this.topProducts,
     required this.last7Days,
+    this.lastWeekOrders = 0,
+    this.lastWeekRevenue = 0,
+    this.revenueChangePercent,
+    this.ordersChangePercent,
+    this.hourly = const [],
+    this.peakStartHour,
+    this.peakEndHour,
   });
 
   factory AdminStats.fromJson(Map<String, dynamic> j) => AdminStats(
@@ -479,6 +699,13 @@ class AdminStats {
         last7Days: ((j['last7Days'] as List?) ?? [])
             .map((e) => DailyStat(e['day'] ?? '', _int(e['orders']), _int(e['revenue'])))
             .toList(),
+        lastWeekOrders: _int(j['same_day_last_week']?['orders']),
+        lastWeekRevenue: _int(j['same_day_last_week']?['revenue']),
+        revenueChangePercent: _double(j['revenue_change_percent']),
+        ordersChangePercent: _double(j['orders_change_percent']),
+        hourly: ((j['hourly'] as List?) ?? []).map(_int).toList(),
+        peakStartHour: j['peak_window']?['start_hour'] == null ? null : _int(j['peak_window']['start_hour']),
+        peakEndHour: j['peak_window']?['end_hour'] == null ? null : _int(j['peak_window']['end_hour']),
       );
 }
 

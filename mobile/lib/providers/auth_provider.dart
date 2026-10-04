@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models.dart';
 import '../services/admin_api.dart' show paymentReviewCount;
@@ -10,6 +9,7 @@ import '../services/auth_api.dart' show passwordResetCount;
 import '../services/push_service.dart';
 import '../services/shared_location.dart';
 import 'cart_provider.dart';
+import 'token_store.dart';
 
 void _log(String message) {
   if (kDebugMode) debugPrint('[AuthProvider] $message');
@@ -25,7 +25,8 @@ Future<void> _safe(String what, FutureOr<void> Function() action) async {
 }
 
 class AuthProvider extends ChangeNotifier {
-  static const _tokenKey = 'auth_token';
+  /// Jeton de connexion chiffré (Keystore Android), migré depuis SharedPreferences.
+  final TokenStore _tokens;
 
   /// Panier à vider à la déconnexion et à rattacher au compte connecté.
   final CartProvider? cart;
@@ -48,7 +49,7 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoggedIn => user != null;
   String? get lastError => _lastError;
 
-  AuthProvider({this.cart}) {
+  AuthProvider({this.cart, TokenStore? tokenStore}) : _tokens = tokenStore ?? TokenStore() {
     Api.instance.onUnauthorized = _onUnauthorized;
   }
 
@@ -58,8 +59,8 @@ class AuthProvider extends ChangeNotifier {
       // Réveille le serveur pendant l'écran d'accueil (jusqu'à 90 s sur l'offre gratuite) :
       // la connexion qui suit ne tombera pas sur un serveur endormi.
       final awake = await Api.instance.wakeUp();
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(_tokenKey);
+      // Stockage chiffré illisible : null, l'utilisateur se reconnecte simplement.
+      final token = await _tokens.read();
       if (token != null) {
         Api.instance.token = token;
         if (awake) {
@@ -176,12 +177,8 @@ class AuthProvider extends ChangeNotifier {
     if (user != null && user!.id != u.id) await _clear();
     final newSession = user?.id != u.id;
     Api.instance.token = token;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_tokenKey, token);
-    } catch (e) {
-      _log('Jeton non enregistré : $e');
-    }
+    // Échec du stockage chiffré : session valable jusqu'à la fermeture de l'app.
+    if (!await _tokens.save(token)) _log('Jeton non enregistré');
     _startSession(u, register: newSession);
     notifyListeners();
   }
@@ -266,12 +263,7 @@ class AuthProvider extends ChangeNotifier {
     paymentReviewCount.value = 0;
     passwordResetCount.value = 0;
     Api.instance.invalidateCache();
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_tokenKey);
-    } catch (e) {
-      _log('Jeton non supprimé : $e');
-    }
+    await _tokens.clear();
     unawaited(unregister);
   }
 

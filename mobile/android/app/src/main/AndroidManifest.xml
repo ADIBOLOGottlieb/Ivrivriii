@@ -2,7 +2,14 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Suivi en direct du livreur pendant une livraison : service au premier plan (notification
+         « Livraison en cours »), déclaré par le plugin geolocator (GeolocatorLocationService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:label="Ivrivrii Chicken"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

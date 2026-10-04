@@ -1,4 +1,4 @@
-// Appels API de l'espace administrateur : paiements, encaissements, reversements.
+// Appels API de l'espace administrateur : paiements, encaissements, reversements, personnel, erreurs.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -89,6 +89,44 @@ Future<List<RecentPayment>> fetchRecentPayments({int? sinceId}) async =>
         .toList();
 
 Future<MerchantInfo> fetchMerchant() async => MerchantInfo.fromJson(_map(await Api.instance.get('/admin/payments/merchant')));
+
+// ---------- Personnel (gérant) ----------
+
+/// Comptes du personnel (gérants et cuisine), y compris désactivés.
+Future<List<StaffMember>> fetchStaff() async =>
+    _list(await Api.instance.get('/admin/staff')).map(StaffMember.fromJson).toList();
+
+/// Crée un compte du personnel ([adminLevel] : 'manager' ou 'kitchen'). Numéro déjà utilisé → erreur 409.
+Future<StaffMember> createStaff({
+  required String name,
+  required String phone,
+  required String password,
+  required String adminLevel,
+}) async =>
+    StaffMember.fromJson(_map(await Api.instance.post('/admin/staff', {
+      'name': name,
+      'phone': phone,
+      'password': password,
+      'admin_level': adminLevel,
+    })));
+
+/// Modifie un compte du personnel (champs null non envoyés). Le serveur refuse de retirer
+/// le dernier gérant actif (« Il faut au moins un gérant actif »).
+Future<StaffMember> updateStaff(int id, {String? name, String? password, String? adminLevel, bool? active}) async =>
+    StaffMember.fromJson(_map(await Api.instance.patch('/admin/staff/$id', {
+      'name': ?name,
+      'password': ?password,
+      'admin_level': ?adminLevel,
+      'active': ?active,
+    })));
+
+// ---------- Journal des erreurs (gérant) ----------
+
+/// Erreurs enregistrées, des plus récentes aux plus anciennes. [source] : 'app', 'server' ou null (toutes).
+Future<List<ErrorLogEntry>> fetchErrorLogs({String? source, int limit = 200}) async =>
+    _list(await Api.instance.get('/admin/errors', {'limit': '$limit', 'source': ?source}))
+        .map(ErrorLogEntry.fromJson)
+        .toList();
 
 // ---------- Encaissements ----------
 

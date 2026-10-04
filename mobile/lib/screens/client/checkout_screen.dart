@@ -13,6 +13,8 @@ import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import 'gps_picker_screen.dart';
 import 'location_import_sheet.dart';
+import 'opening_hours_banner.dart';
+import 'order_estimate.dart';
 import 'profile/saved_addresses_screen.dart';
 
 /// Finalisation de la commande. Retourne la [Order] créée via `Navigator.pop`.
@@ -36,6 +38,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   LocationData? _location;
   // Dernière adresse remplie automatiquement (profil, GPS, « Mes adresses »).
   String? _prefilledAddress;
+  // Devis des frais de livraison pour la position choisie (GET /api/delivery/quote).
+  DeliveryQuote? _quote;
+  bool _quoting = false;
+  int _quoteSeq = 0; // ignore les réponses d'une position précédente
+  String? _quotedKey; // position du dernier devis demandé
 
   @override
   void initState() {
@@ -56,7 +63,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     for (var attempt = 1; attempt <= 3; attempt++) {
       try {
         final s = await Api.instance.settings(fresh: true);
-        if (mounted) setState(() => _settings = s);
+        if (mounted) {
+          setState(() => _settings = s);
+          _refreshQuote();
+        }
         return;
       } catch (_) {
         if (!mounted) return;
@@ -76,12 +86,53 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.dispose();
   }
 
-  int _getDeliveryFee() => _mode == 'delivery' ? (_settings?.deliveryFee ?? 0) : 0;
+  /// Frais de livraison affichés : le devis pour la position, sinon (devis en cours ou
+  /// impossible) les frais de base des réglages. Le serveur recalcule à la commande.
+  int _getDeliveryFee() => _mode == 'delivery' ? (_quote?.fee ?? _settings?.deliveryFee ?? 0) : 0;
 
-  int _getPaymentFee(CartProvider cart) {
-    final settings = _settings;
-    if (settings == null || _payment == 'cash') return 0;
-    return paymentFeeFor(cart.subtotal + _getDeliveryFee(), _payment, settings.feePercentFor(_payment));
+  /// Montant estimé (sous-total + livraison + frais mobile money).
+  OrderEstimate _estimate(CartProvider cart) => OrderEstimate.compute(
+        subtotal: cart.subtotal,
+        delivery: _mode == 'delivery',
+        deliveryFee: _getDeliveryFee(),
+        paymentMethod: _payment,
+        feePercent: _settings == null ? 0 : _feePercent(),
+      );
+
+  /// Adresse hors de la zone de livraison (devis du serveur).
+  bool get _outOfZone => _mode == 'delivery' && _quote != null && !_quote!.withinZone;
+
+  /// Demande le devis de livraison quand la position change (sans effet si déjà demandé).
+  Future<void> _refreshQuote() async {
+    final loc = _location;
+    if (loc == null || _settings == null) return;
+    final key = '${loc.lat.toStringAsFixed(5)},${loc.lng.toStringAsFixed(5)}';
+    if (key == _quotedKey && (_quote != null || _quoting)) return;
+    _quotedKey = key;
+    final seq = ++_quoteSeq;
+    setState(() {
+      _quote = null;
+      _quoting = true;
+    });
+    DeliveryQuote? quote;
+    try {
+      quote = await Api.instance.deliveryQuote(lat: loc.lat, lng: loc.lng);
+    } catch (_) {
+      // Devis impossible (réseau) : frais de base affichés, le serveur tranchera.
+      quote = null;
+    }
+    if (!mounted || seq != _quoteSeq) return;
+    setState(() {
+      _quote = quote;
+      _quoting = false;
+      if (quote == null) _quotedKey = null; // nouvel essai au prochain changement
+    });
+  }
+
+  /// Change la position de livraison et relance le devis.
+  void _setLocation(LocationData loc) {
+    setState(() => _location = loc);
+    _refreshQuote();
   }
 
   /// Taux des frais du moyen sélectionné (commission de l'agrégateur pour cet opérateur).
@@ -103,10 +154,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   Future<void> _selectLocation() async {
     final loc = await showLocationImportSheet(context, initialLat: _location?.lat, initialLng: _location?.lng);
     if (loc == null || !mounted) return;
-    setState(() {
-      _location = loc;
-      _prefillAddress(loc.address);
-    });
+    _prefillAddress(loc.address);
+    _setLocation(loc);
   }
 
   /// Une position partagée depuis Google Maps est arrivée : on l'utilise directement,
@@ -119,11 +168,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   Future<void> _useImported(ImportedLocation imported) async {
-    setState(() {
-      _mode = 'delivery';
-      _location = LocationData(lat: imported.lat, lng: imported.lng, address: importedAddressText(imported));
-      _prefillAddress(_location!.address);
-    });
+    final loc = LocationData(lat: imported.lat, lng: imported.lng, address: importedAddressText(imported));
+    _mode = 'delivery';
+    _prefillAddress(loc.address);
+    _setLocation(loc);
     showMessage(context, 'Position reçue de Google Maps ✅');
     if ((imported.address?.trim() ?? '').isNotEmpty) return;
     // Pas d'adresse partagée : on la cherche (OpenStreetMap) pour pré-remplir le champ.
@@ -144,10 +192,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     setState(() {
       _address.text = a.address;
       _prefilledAddress = a.address;
-      if (a.lat != null && a.lng != null) {
-        _location = LocationData(lat: a.lat!, lng: a.lng!, address: a.address);
-      }
     });
+    if (a.lat != null && a.lng != null) _setLocation(LocationData(lat: a.lat!, lng: a.lng!, address: a.address));
   }
 
   Future<void> _submit() async {
@@ -155,7 +201,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final cart = context.read<CartProvider>();
     final settings = _settings;
     if (settings != null && !settings.isOpen) {
-      showMessage(context, 'Le restaurant est fermé pour le moment', error: true);
+      showMessage(context, closedOrderMessage(settings), error: true);
+      return;
+    }
+    if (_outOfZone) {
+      showMessage(context, outOfZoneMessage(_quote!), error: true);
       return;
     }
     if (settings != null && cart.subtotal < settings.minOrder) {
@@ -227,8 +277,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   Widget build(BuildContext context) {
     final cart = context.watch<CartProvider>();
-    final deliveryFee = _getDeliveryFee();
-    final paymentFee = _getPaymentFee(cart);
+    final estimate = _estimate(cart);
+    final deliveryFee = estimate.deliveryFee;
+    final paymentFee = estimate.paymentFee;
+    final settings = _settings;
+    final closed = settings != null && !settings.isOpen;
     return Scaffold(
       appBar: AppBar(title: const Text('Finaliser la commande')),
       body: Form(
@@ -250,6 +303,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
             ],
+            // Fermé (« ouvre lundi à 10:00 ») ou fermeture dans moins de 30 min.
+            if (settings != null)
+              OpeningHoursBanner(
+                settings: settings,
+                margin: const EdgeInsets.only(bottom: 16),
+                onExpired: _loadSettings,
+              ),
             const _Label('Mode de retrait'),
             SegmentedButton<String>(
               segments: const [
@@ -342,6 +402,31 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   ),
                 ),
               ),
+              if (_outOfZone) ...[
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.wrong_location_rounded, color: Theme.of(context).colorScheme.onErrorContainer),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          '${outOfZoneMessage(_quote!)}. Choisissez une autre position ou optez pour « À emporter ».',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onErrorContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
             ] else if (_settings != null) ...[
               Card(
@@ -418,11 +503,30 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       ),
                     const Divider(height: 20),
                     _TotalRow('Sous-total', cart.subtotal),
-                    if (_mode == 'delivery') _TotalRow('Livraison', deliveryFee),
+                    if (_mode == 'delivery')
+                      _TotalRow(
+                        deliveryLineLabel(_quote),
+                        deliveryFee,
+                        // Devis en cours : frais de base affichés en attendant.
+                        trailing: _quoting
+                            ? const Padding(
+                                padding: EdgeInsets.only(left: 8),
+                                child: SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                              )
+                            : null,
+                      ),
                     if (_payment != 'cash' && paymentFee > 0)
                       _TotalRow('Frais ${paymentLabel(_payment).split(' ').first} (${formatPercent(_feePercent())} %)', paymentFee),
                     const SizedBox(height: 6),
-                    _TotalRow('Total', cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0), bold: true),
+                    _TotalRow('Total', estimate.total, bold: true),
+                    if (_mode == 'delivery' && settings != null && settings.feeByDistance && _quote == null && !_quoting)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'Frais de livraison selon la distance : montant exact confirmé à la commande.',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -438,12 +542,22 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           top: false,
           child: FilledButton(
             // Sans les réglages, les frais affichés seraient faux : on attend leur chargement.
-            onPressed: _submitting || _settings == null || cart.isEmpty || (_mode == 'delivery' && _location == null)
+            // Fermé ou hors zone : commande impossible (le message est affiché plus haut).
+            onPressed: _submitting ||
+                    _settings == null ||
+                    cart.isEmpty ||
+                    closed ||
+                    _outOfZone ||
+                    (_mode == 'delivery' && _location == null)
                 ? null
                 : _submit,
             child: _submitting
                 ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
-                : Text('Commander • ${formatPrice(cart.subtotal + deliveryFee + (_payment != 'cash' ? paymentFee : 0))}'),
+                : Text(closed
+                    ? 'Restaurant fermé'
+                    : _outOfZone
+                        ? 'Adresse hors zone de livraison'
+                        : 'Commander • ${formatPrice(estimate.total)}'),
           ),
         ),
       ),
@@ -466,7 +580,8 @@ class _TotalRow extends StatelessWidget {
   final String label;
   final int amount;
   final bool bold;
-  const _TotalRow(this.label, this.amount, {this.bold = false});
+  final Widget? trailing; // ex. indicateur de devis en cours
+  const _TotalRow(this.label, this.amount, {this.bold = false, this.trailing});
 
   @override
   Widget build(BuildContext context) {
@@ -477,7 +592,12 @@ class _TotalRow extends StatelessWidget {
     );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(children: [Text(label, style: style), const Spacer(), Text(formatPrice(amount), style: style)]),
+      child: Row(children: [
+        Text(label, style: style),
+        ?trailing,
+        const Spacer(),
+        Text(formatPrice(amount), style: style),
+      ]),
     );
   }
 }

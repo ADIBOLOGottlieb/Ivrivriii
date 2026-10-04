@@ -10,6 +10,7 @@ import '../../services/order_events.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
+import 'order_estimate.dart' show formatKm;
 
 enum _Step { input, waiting, result }
 
@@ -183,6 +184,27 @@ class _PaymentScreenState extends State<PaymentScreen> with SingleTickerProvider
     }
   }
 
+  /// Change d'opérateur (Flooz ↔ Mixx) avant d'envoyer la demande : le serveur recalcule
+  /// les frais et le total, et refuse si une demande est encore en cours.
+  Future<void> _changeOperator(String method) async {
+    if (_busy || method == _order.paymentMethod) return;
+    setState(() {
+      _busy = true;
+      _localMessage = null;
+    });
+    try {
+      final o = await Api.instance.changePaymentMethod(_order.id, method);
+      if (!mounted) return;
+      setState(() => _order = o);
+      notifyOrdersChanged();
+      showMessage(context, 'Paiement par ${paymentLabel(o.paymentMethod)} : ${formatPrice(o.total)}');
+    } catch (e) {
+      if (mounted) showMessage(context, e, error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _abandon() async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -275,13 +297,35 @@ class _PaymentScreenState extends State<PaymentScreen> with SingleTickerProvider
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: scheme.onSurface, height: 1.25),
           ),
           const SizedBox(height: 12),
+          // Changer d'opérateur : seulement tant qu'aucune demande n'est en cours.
+          if (isMobileMoney(o.paymentMethod) && !o.isCancelled && !o.isPaid) ...[
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'flooz', label: Text('Flooz'), icon: Icon(Icons.phone_android_rounded)),
+                ButtonSegment(value: 'mixx', label: Text('Mixx by Yas'), icon: Icon(Icons.phone_android_rounded)),
+              ],
+              selected: {o.paymentMethod},
+              showSelectedIcon: false,
+              onSelectionChanged: _busy ? null : (s) => _changeOperator(s.first),
+              style: SegmentedButton.styleFrom(
+                selectedBackgroundColor: AppColors.red,
+                selectedForegroundColor: Colors.white,
+                backgroundColor: scheme.surface,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
                   _AmountRow('Sous-total', o.subtotal),
-                  if (o.isDelivery) _AmountRow('Livraison', o.deliveryFee),
+                  if (o.isDelivery)
+                    _AmountRow(
+                      o.deliveryDistanceKm == null ? 'Livraison' : 'Livraison (${formatKm(o.deliveryDistanceKm!)})',
+                      o.deliveryFee,
+                    ),
                   if (o.paymentFee > 0) _AmountRow('Frais de paiement', o.paymentFee),
                   const Divider(height: 18),
                   _AmountRow('Total à payer', o.total, bold: true),

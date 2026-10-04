@@ -222,3 +222,127 @@ String providerLabel(String p) {
   }
   return p.isEmpty ? '—' : p;
 }
+
+// ---------- Personnel ----------
+
+/// Libellé d'un niveau du personnel.
+String staffLevelLabel(String level) => level == 'kitchen' ? 'Cuisine' : 'Gérant';
+
+// ---------- Réglages : horaires et frais de livraison ----------
+
+/// Noms des jours (clés de [AppSettings.weekDays]).
+const weekDayLabels = <String, String>{
+  'mon': 'Lundi',
+  'tue': 'Mardi',
+  'wed': 'Mercredi',
+  'thu': 'Jeudi',
+  'fri': 'Vendredi',
+  'sat': 'Samedi',
+  'sun': 'Dimanche',
+};
+
+/// Nom du jour en minuscules (« samedi ») pour un [DateTime.weekday] (1 = lundi).
+String frenchWeekday(int weekday) =>
+    const ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'][(weekday - 1) % 7];
+
+/// Minutes depuis minuit d'une heure « HH:MM » (« 24:00 » = 1440), null si invalide.
+int? hhmmToMinutes(String v) {
+  final m = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(v.trim());
+  if (m == null) return null;
+  final h = int.parse(m.group(1)!), min = int.parse(m.group(2)!);
+  if (min > 59 || h > 24 || (h == 24 && min != 0)) return null;
+  return h * 60 + min;
+}
+
+/// « HH:MM » pour un nombre de minutes depuis minuit (1440 → « 24:00 »).
+String minutesToHhmm(int minutes) {
+  final m = minutes.clamp(0, 1440);
+  return '${(m ~/ 60).toString().padLeft(2, '0')}:${(m % 60).toString().padLeft(2, '0')}';
+}
+
+/// Horaires par défaut : tous les jours 10:00–22:00.
+Map<String, List<List<String>>> defaultOpeningHours() => {
+      for (final d in AppSettings.weekDays)
+        d: [
+          ['10:00', '22:00'],
+        ],
+    };
+
+/// Erreur de saisie d'une journée (plages invalides ou qui se chevauchent), sinon null.
+String? openingRangesError(List<List<String>> ranges) {
+  final parsed = <(int, int)>[];
+  for (final r in ranges) {
+    final a = hhmmToMinutes(r[0]), b = hhmmToMinutes(r[1]);
+    if (a == null || b == null) return 'Heure invalide';
+    if (a >= b) return "L'heure de fin doit suivre l'heure de début";
+    parsed.add((a, b));
+  }
+  parsed.sort((x, y) => x.$1.compareTo(y.$1));
+  for (var i = 1; i < parsed.length; i++) {
+    if (parsed[i].$1 < parsed[i - 1].$2) return 'Les plages se chevauchent';
+  }
+  return null;
+}
+
+/// Frais de livraison au kilomètre (même calcul que le serveur) :
+/// base + ceil(max(0, km − inclus)) × prix par km, arrondi aux 50 FCFA supérieurs.
+int estimateDeliveryFee({required int base, required int perKm, required double freeKm, required double km}) {
+  final extra = km - freeKm;
+  // Petite tolérance : 5,0 − 2,0 ne doit pas devenir 3,0000001 → 4 km facturés.
+  final extraKm = extra <= 0 ? 0 : (extra - 1e-9).ceil();
+  final fee = base + extraKm * perKm;
+  return ((fee + 49) ~/ 50) * 50;
+}
+
+/// Copie des réglages en remplaçant certains champs (les autres sont renvoyés tels quels,
+/// pour ne pas les écraser par les valeurs par défaut de [AppSettings]).
+extension AppSettingsCopy on AppSettings {
+  AppSettings copyWith({
+    int? deliveryFee,
+    int? minOrder,
+    bool? manualOpen,
+    String? restaurantPhone,
+    String? restaurantAddress,
+    double? restaurantLat,
+    double? restaurantLng,
+    double? paymentFeePercent,
+    double? paymentFeePercentSettings,
+    int? momoUnpaidCancelMinutes,
+    bool? hoursEnabled,
+    Map<String, List<List<String>>>? openingHours,
+    String? deliveryFeeMode,
+    int? deliveryFeePerKm,
+    double? deliveryFreeKm,
+    double? deliveryMaxKm,
+  }) =>
+      AppSettings(
+        deliveryFee: deliveryFee ?? this.deliveryFee,
+        minOrder: minOrder ?? this.minOrder,
+        isOpen: isOpen,
+        manualOpen: manualOpen ?? this.manualOpen,
+        restaurantPhone: restaurantPhone ?? this.restaurantPhone,
+        restaurantAddress: restaurantAddress ?? this.restaurantAddress,
+        restaurantLat: restaurantLat ?? this.restaurantLat,
+        restaurantLng: restaurantLng ?? this.restaurantLng,
+        otpRequired: otpRequired,
+        termsVersion: termsVersion,
+        termsUrl: termsUrl,
+        privacyUrl: privacyUrl,
+        paymentFeePercent: paymentFeePercent ?? this.paymentFeePercent,
+        paymentFeePercentByOperator: paymentFeePercentByOperator,
+        paymentFeeSource: paymentFeeSource,
+        paymentFeePercentSettings: paymentFeePercentSettings ?? this.paymentFeePercentSettings,
+        paymentMode: paymentMode,
+        paymentProvider: paymentProvider,
+        maxQuantityPerItem: maxQuantityPerItem,
+        momoUnpaidCancelMinutes: momoUnpaidCancelMinutes ?? this.momoUnpaidCancelMinutes,
+        hoursEnabled: hoursEnabled ?? this.hoursEnabled,
+        openingHours: openingHours ?? this.openingHours,
+        nextOpeningAt: nextOpeningAt,
+        nextClosingAt: nextClosingAt,
+        deliveryFeeMode: deliveryFeeMode ?? this.deliveryFeeMode,
+        deliveryFeePerKm: deliveryFeePerKm ?? this.deliveryFeePerKm,
+        deliveryFreeKm: deliveryFreeKm ?? this.deliveryFreeKm,
+        deliveryMaxKm: deliveryMaxKm ?? this.deliveryMaxKm,
+      );
+}

@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../models.dart';
+import '../../providers/auth_provider.dart';
 import '../../services/api.dart';
 import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/animations.dart';
 import '../../widgets/common.dart';
+import 'admin_layout.dart';
 import 'product_form_screen.dart';
 
 class AdminMenuScreen extends StatefulWidget {
@@ -100,6 +103,18 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Compte « cuisine » : disponibilité des plats seulement (ni ajout, ni modification, ni catégories).
+    final kitchen = context.watch<AuthProvider>().user?.isKitchen ?? false;
+    if (kitchen) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Disponibilité des plats')),
+        body: _products == null
+            ? (_error != null
+                ? ErrorRetry(error: _error!, onRetry: () => _load(fresh: true))
+                : const Center(child: CircularProgressIndicator()))
+            : MaxContentWidth(child: _productsTab(editable: false)),
+      );
+    }
     return DefaultTabController(
       length: 2,
       child: Builder(builder: (context) {
@@ -126,13 +141,14 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
               ? (_error != null
                   ? ErrorRetry(error: _error!, onRetry: () => _load(fresh: true))
                   : const Center(child: CircularProgressIndicator()))
-              : TabBarView(children: [_productsTab(), _categoriesTab()]),
+              : MaxContentWidth(child: TabBarView(children: [_productsTab(), _categoriesTab()])),
         );
       }),
     );
   }
 
-  Widget _productsTab() {
+  /// Liste des plats ; [editable] : appui pour modifier (gérant), sinon interrupteur de disponibilité seul.
+  Widget _productsTab({bool editable = true}) {
     final products = _products!;
     final sections = <(String, List<Product>)>[
       for (final c in _categories)
@@ -164,7 +180,7 @@ class _AdminMenuScreenState extends State<AdminMenuScreen> {
                       child: Card(
                         clipBehavior: Clip.antiAlias,
                         child: InkWell(
-                          onTap: () => _openProduct(p),
+                          onTap: editable ? () => _openProduct(p) : () => _toggle(p, !p.available),
                           child: Padding(
                             padding: const EdgeInsets.all(10),
                             child: Row(

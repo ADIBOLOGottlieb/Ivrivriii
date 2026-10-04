@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../config.dart';
 import '../../models.dart';
+import '../../providers/auth_provider.dart';
 import '../../services/api.dart';
 import '../../services/delivery_api.dart';
 import '../../theme.dart';
@@ -40,6 +42,8 @@ class OrderDetailScreen extends StatefulWidget {
 }
 
 class _OrderDetailScreenState extends State<OrderDetailScreen> {
+  static const _liveInterval = Duration(seconds: 8);
+
   Order? _order;
   Object? _error;
   bool _busy = false;
@@ -49,6 +53,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   late final SmartPoller _poller;
   // Position du restaurant (départ de l'itinéraire), si l'admin l'a renseignée.
   LatLng? _restaurant;
+  // Sans position du restaurant : départ = première position connue du livreur (fixe, pas de recalcul à chaque point).
+  LatLng? _trackOrigin;
   String? _restaurantAddress;
 
   @override
@@ -60,7 +66,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     _poller = SmartPoller(
       onPoll: _load,
       // En préparation / en livraison : 5 s ; en attente / confirmée : 10 s ; terminée : plus de suivi.
-      getInterval: SmartPoller.getDefaultInterval,
+      // Livreur suivi en direct : 8 s (le marqueur glisse entre deux positions).
+      getInterval: (status) => status == 'delivering' && (_order?.isTrackable ?? false)
+          ? _liveInterval
+          : SmartPoller.getDefaultInterval(status),
       canPoll: () => isRouteOnTop(context),
     );
     _poller.startPolling(_order?.status ?? 'pending');
@@ -286,7 +295,9 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final o = _order;
-    final restaurant = _restaurant;
+    final dl = o?.isTrackable == true ? o!.driverLocation : null;
+    if (_restaurant == null && _trackOrigin == null && dl != null) _trackOrigin = LatLng(dl.lat, dl.lng);
+    final restaurant = _restaurant ?? _trackOrigin;
     return Scaffold(
       appBar: AppBar(title: Text('Commande n°${widget.orderId}')),
       body: o == null
@@ -357,12 +368,20 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              const Text('Itinéraire', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                              Text(o.isTrackable ? 'Suivi en direct' : 'Itinéraire',
+                                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
                               const SizedBox(height: 12),
+                              if (_liveTracking(o)) ...[
+                                _LiveTrackingBanner(order: o),
+                                const SizedBox(height: 12),
+                              ],
                               RouteMap(
                                 from: restaurant,
                                 to: LatLng(o.deliveryLat!, o.deliveryLng!),
-                                fromLabel: _restaurantAddress != null
+                                driver: o.isTrackable ? o.driverLocation : null,
+                                fromLabel: _restaurant == null
+                                    ? 'Départ du livreur'
+                                    : _restaurantAddress != null
                                     ? 'Restaurant • $_restaurantAddress'
                                     : 'Restaurant',
                                 toLabel: o.address ?? 'Point de livraison',
@@ -441,7 +460,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           child: const Text('Annuler la commande'),
         ));
       }
-      if (o.isCancelled && o.isPaid) {
+      if (o.isCancelled && o.isPaid && !(context.read<AuthProvider>().user?.isKitchen ?? false)) {
         buttons.add(FilledButton.icon(
           onPressed: _busy ? null : _refund,
           icon: const Icon(Icons.currency_exchange_rounded),
@@ -860,6 +879,90 @@ class _PaymentCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Livraison en route (avant « Livraison faite ») : place pour le suivi en direct du livreur.
+bool _liveTracking(Order o) => o.isDelivery && o.status == 'delivering' && o.driverDeliveredAt == null;
+
+/// Suivi en direct : arrivée estimée, ancienneté de la position, ou position pas encore partagée.
+class _LiveTrackingBanner extends StatelessWidget {
+  final Order order;
+  const _LiveTrackingBanner({required this.order});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final loc = order.isTrackable ? order.driverLocation : null;
+
+    if (loc == null) {
+      return Row(
+        children: [
+          Icon(Icons.location_searching_rounded, size: 20, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              order.hasDriver
+                  ? '${_driverLabel(order)} n\'a pas encore partagé sa position.'
+                  : 'Le livreur n\'a pas encore partagé sa position.',
+              style: TextStyle(fontSize: 13.5, color: scheme.onSurfaceVariant),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final eta = order.etaMinutes;
+    final ago = DateTime.now().difference(loc.updatedAt).inMinutes;
+    final accent = dark ? scheme.primary : AppColors.red;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: dark ? 0.14 : 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 18,
+            backgroundColor: AppColors.red,
+            child: Icon(Icons.delivery_dining_rounded, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: Text(
+                    eta != null ? 'Arrivée estimée : $eta min' : '${_driverLabel(order)} est en route',
+                    key: ValueKey(eta),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: scheme.onSurface),
+                  ),
+                ),
+                if (loc.isStale) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Dernière position il y a ${ago < 1 ? 1 : ago} min',
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: scheme.onSurfaceVariant),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Position en direct',
+                    style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

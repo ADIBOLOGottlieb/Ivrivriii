@@ -16,11 +16,8 @@ class DriverStats {
 
   static int _n(dynamic v) => v is int ? v : (v is num ? v.toInt() : int.tryParse('$v') ?? 0);
 
-  factory DriverStats.fromJson(Map<String, dynamic> j) => DriverStats(
-        todayCount: _n(j['today_count']),
-        todayCash: _n(j['today_cash']),
-        activeCount: _n(j['active_count']),
-      );
+  factory DriverStats.fromJson(Map<String, dynamic> j) =>
+      DriverStats(todayCount: _n(j['today_count']), todayCash: _n(j['today_cash']), activeCount: _n(j['active_count']));
 }
 
 List<Order> _orders(dynamic r) =>
@@ -44,3 +41,31 @@ Future<Order> releaseOrder(int orderId) async =>
 
 Future<DriverStats> fetchDriverStats() async =>
     DriverStats.fromJson(await Api.instance.get('/driver/stats') as Map<String, dynamic>);
+
+/// Réponse de POST /api/driver/location.
+class DriverLocationResult {
+  /// false : aucune livraison en cours, la position n'est pas enregistrée (arrêter l'envoi).
+  final bool tracking;
+  final int activeOrders;
+
+  const DriverLocationResult({required this.tracking, this.activeOrders = 0});
+}
+
+/// Envoie la position du livreur (suivi en direct par le client pendant la livraison).
+Future<DriverLocationResult> sendDriverLocation({
+  required double lat,
+  required double lng,
+  double? accuracy,
+  double? heading,
+  double? speed,
+}) async {
+  final r = await Api.instance.post('/driver/location', {
+    'lat': lat,
+    'lng': lng,
+    'accuracy': ?accuracy,
+    'heading': ?heading,
+    'speed': ?speed,
+  });
+  final m = r is Map ? r : const {};
+  return DriverLocationResult(tracking: m['tracking'] == true, activeOrders: DriverStats._n(m['active_orders']));
+}

@@ -15,10 +15,14 @@ import '../../widgets/common.dart';
 import '../client/gps_picker_screen.dart';
 import '../client/profile_screen.dart';
 import '../legal/legal_screen.dart' show appVersion;
+import 'admin_layout.dart';
 import 'collections_screen.dart';
 import 'drivers_screen.dart';
+import 'error_logs_screen.dart';
+import 'opening_hours_editor.dart';
 import 'password_resets_screen.dart';
 import 'payments_review_screen.dart';
+import 'staff_screen.dart';
 
 class AdminMoreScreen extends StatefulWidget {
   const AdminMoreScreen({super.key});
@@ -28,25 +32,54 @@ class AdminMoreScreen extends StatefulWidget {
 }
 
 class _AdminMoreScreenState extends State<AdminMoreScreen> {
+  bool get _kitchen => context.read<AuthProvider>().user?.isKitchen ?? false;
+
   @override
   void initState() {
     super.initState();
-    refreshPasswordResetCount(); // badge « Mots de passe oubliés »
+    // Badge « Mots de passe oubliés » (gérant seulement : refus 403 pour la cuisine).
+    if (!_kitchen) refreshPasswordResetCount();
   }
 
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().user;
+    final kitchen = user?.isKitchen ?? false;
     Future<void> open(Widget page) async {
       await Navigator.push(context, MaterialPageRoute(builder: (_) => page));
-      refreshPasswordResetCount();
+      if (!kitchen) refreshPasswordResetCount();
     }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Plus')),
-      body: ListView(
+      body: MaxContentWidth(
+        maxWidth: 760,
+        child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
+          if (kitchen)
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.delivery_dining_rounded, color: AppColors.red),
+                    title: const Text('Livreurs'),
+                    subtitle: const Text('Disponibilité et livraisons en cours'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => open(const DriversScreen()),
+                  ),
+                  if (user != null)
+                    ListTile(
+                      leading: const Icon(Icons.manage_accounts_rounded, color: AppColors.red),
+                      title: const Text('Mon compte'),
+                      subtitle: Text('${user.phone} • Cuisine'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => open(EditProfileScreen(user: user)),
+                    ),
+                ],
+              ),
+            )
+          else ...[
           Card(
             child: Column(
               children: [
@@ -128,6 +161,28 @@ class _AdminMoreScreenState extends State<AdminMoreScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.badge_rounded, color: AppColors.red),
+                  title: const Text('Personnel'),
+                  subtitle: const Text('Comptes gérant et cuisine'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => open(const StaffScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.bug_report_rounded, color: AppColors.red),
+                  title: const Text("Erreurs de l'app"),
+                  subtitle: const Text("Plantages de l'application et erreurs du serveur"),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => open(const ErrorLogsScreen()),
+                ),
+              ],
+            ),
+          ),
+          ],
+          const SizedBox(height: 16),
           OutlinedButton.icon(
             style: OutlinedButton.styleFrom(foregroundColor: AppColors.darkRed),
             onPressed: () async {
@@ -149,6 +204,7 @@ class _AdminMoreScreenState extends State<AdminMoreScreen> {
             ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -179,7 +235,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double? _lng;
   String? _positionAddress; // adresse renvoyée par la carte (session en cours)
   bool _savingPosition = false;
-  bool _isOpen = true;
+  bool _manualOpen = true; // interrupteur manuel (l'état effectif dépend aussi des horaires)
+  // Horaires d'ouverture automatiques.
+  bool _hoursEnabled = false;
+  Map<String, List<List<String>>> _hours = defaultOpeningHours();
+  // Frais de livraison : 'fixed' ou 'distance' (base = _fee).
+  String _feeMode = 'fixed';
+  final _perKm = TextEditingController();
+  final _freeKm = TextEditingController();
+  final _maxKm = TextEditingController();
   bool _loaded = false;
   bool _saving = false;
   Object? _error;
@@ -192,7 +256,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    for (final c in [_fee, _min, _phone, _address, _cancelMinutes, _paymentFee, _autoConfirmHours]) {
+    for (final c in [
+      _fee, _min, _phone, _address, _cancelMinutes, _paymentFee, _autoConfirmHours, _perKm, _freeKm, _maxKm, //
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -208,7 +274,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _min.text = '${s.minOrder}';
         _phone.text = s.restaurantPhone;
         _address.text = s.restaurantAddress;
-        _isOpen = s.isOpen;
+        _manualOpen = s.manualOpen;
+        _hoursEnabled = s.hoursEnabled;
+        // Jours absents de la réponse : fermés ; aucun horaire enregistré : 10:00–22:00 partout.
+        _hours = s.openingHours.isEmpty
+            ? defaultOpeningHours()
+            : {
+                for (final d in AppSettings.weekDays)
+                  d: [
+                    for (final r in s.openingHours[d] ?? const <List<String>>[]) [...r],
+                  ],
+              };
+        _feeMode = s.deliveryFeeMode;
+        _perKm.text = '${s.deliveryFeePerKm}';
+        _freeKm.text = _km(s.deliveryFreeKm);
+        _maxKm.text = _km(s.deliveryMaxKm);
         _cancelMinutes.text = '${s.momoUnpaidCancelMinutes}';
         _paymentFee.text = formatPercent(s.paymentFeePercentSettings ?? s.paymentFeePercent);
         _lat = s.restaurantLat;
@@ -238,33 +318,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _saving = true);
     final current = _current;
+    if (current == null || !_formKey.currentState!.validate()) return;
+    // Horaires : plages valides et sans chevauchement (seulement si les horaires automatiques sont actifs).
+    if (_hoursEnabled) {
+      for (final d in AppSettings.weekDays) {
+        final err = openingRangesError(_hours[d] ?? const []);
+        if (err != null) {
+          showMessage(context, '${weekDayLabels[d]} : $err', error: true);
+          return;
+        }
+      }
+    }
+    setState(() => _saving = true);
     // Frais fixés par l'agrégateur : champ en lecture seule, valeur chargée renvoyée telle quelle
     // (AppSettings.toJson ne l'envoie pas au serveur dans ce cas).
-    final feePercent = current != null && current.feesFromAggregator
+    final feePercent = current.feesFromAggregator
         ? (current.paymentFeePercentSettings ?? current.paymentFeePercent)
-        : _parsePercent(_paymentFee.text) ?? current?.paymentFeePercent ?? 2;
+        : _parsePercent(_paymentFee.text) ?? current.paymentFeePercent;
     try {
-      await Api.instance.saveSettings(AppSettings(
+      // Champs non modifiés ici : copyWith renvoie les valeurs chargées pour ne pas les écraser
+      // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
+      await Api.instance.saveSettings(current.copyWith(
         deliveryFee: int.parse(_fee.text.trim()),
         minOrder: int.parse(_min.text.trim()),
-        isOpen: _isOpen,
+        manualOpen: _manualOpen,
+        hoursEnabled: _hoursEnabled,
+        openingHours: _sortedHours(),
+        deliveryFeeMode: _feeMode,
+        // Champs « distance » masqués en prix fixe : valeurs chargées renvoyées telles quelles.
+        deliveryFeePerKm: int.tryParse(_perKm.text.trim()) ?? current.deliveryFeePerKm,
+        deliveryFreeKm: _parseKm(_freeKm.text) ?? current.deliveryFreeKm,
+        deliveryMaxKm: _parseKm(_maxKm.text) ?? current.deliveryMaxKm,
         restaurantPhone: _phone.text.trim(),
         restaurantAddress: _address.text.trim(),
         // Position enregistrée à part (bouton « Placer sur la carte ») : renvoyée telle quelle.
         restaurantLat: _lat,
         restaurantLng: _lng,
-        // Champs non modifiés ici : on renvoie les valeurs chargées pour ne pas les écraser
-        // par les valeurs par défaut de AppSettings (ex. frais de paiement 2 %).
         paymentFeePercent: feePercent,
-        paymentFeePercentByOperator: _current?.paymentFeePercentByOperator,
-        paymentFeeSource: _current?.paymentFeeSource ?? 'settings',
         paymentFeePercentSettings: feePercent,
-        paymentMode: _current?.paymentMode ?? 'test',
-        paymentProvider: _current?.paymentProvider ?? 'simulation',
-        maxQuantityPerItem: _current?.maxQuantityPerItem ?? 999,
         momoUnpaidCancelMinutes: int.parse(_cancelMinutes.text.trim()),
       ));
       // Réglage absent de AppSettings : envoyé seul, uniquement s'il a changé.
@@ -317,22 +409,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       // Enregistre la position à partir des réglages chargés : les modifications du formulaire
       // non encore enregistrées restent à l'écran et partent avec « Enregistrer ».
-      final saved = await Api.instance.saveSettings(AppSettings(
-        deliveryFee: base.deliveryFee,
-        minOrder: base.minOrder,
-        isOpen: base.isOpen,
-        restaurantPhone: base.restaurantPhone,
+      // (copyWith garde l'interrupteur manuel, les horaires et les frais au km tels quels.)
+      final saved = await Api.instance.saveSettings(base.copyWith(
         restaurantAddress: replaceAddress ? found : base.restaurantAddress,
         restaurantLat: loc.lat,
         restaurantLng: loc.lng,
-        paymentFeePercent: base.paymentFeePercent,
-        paymentFeePercentByOperator: base.paymentFeePercentByOperator,
-        paymentFeeSource: base.paymentFeeSource,
-        paymentFeePercentSettings: base.paymentFeePercentSettings,
-        paymentMode: base.paymentMode,
-        paymentProvider: base.paymentProvider,
-        maxQuantityPerItem: base.maxQuantityPerItem,
-        momoUnpaidCancelMinutes: base.momoUnpaidCancelMinutes,
       ));
       if (!mounted) return;
       setState(() {
@@ -413,6 +494,205 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String? _amount(String? v) => int.tryParse(v?.trim() ?? '') == null ? 'Montant invalide' : null;
 
+  /// Kilomètres saisis (virgule ou point), null si invalide.
+  static double? _parseKm(String? v) => double.tryParse((v ?? '').trim().replaceAll(',', '.'));
+
+  /// « 2 » plutôt que « 2.0 », « 2,5 » pour les décimales.
+  static String _km(double v) => formatPercent(v);
+
+  /// Horaires triés par heure de début (envoyés au serveur).
+  Map<String, List<List<String>>> _sortedHours() => {
+        for (final d in AppSettings.weekDays)
+          d: [...(_hours[d] ?? const <List<String>>[])]
+            ..sort((a, b) => (hhmmToMinutes(a[0]) ?? 0).compareTo(hhmmToMinutes(b[0]) ?? 0)),
+      };
+
+  /// État effectif enregistré : « Ouvert maintenant — ferme à 22:00 » / « Fermé — ouvre lundi à 10:00 ».
+  Widget _openStateCard() {
+    final s = _current!;
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final String title;
+    if (s.isOpen) {
+      final closing = s.nextClosingAt;
+      title = closing == null ? 'Ouvert maintenant' : 'Ouvert maintenant — ferme ${_when(closing)}';
+    } else {
+      final opening = s.nextOpeningAt;
+      title = opening != null
+          ? 'Fermé — ouvre ${_when(opening)}'
+          : (!s.manualOpen ? "Fermé (interrupteur manuel)" : 'Fermé');
+    }
+    final color = s.isOpen ? (dark ? AppColors.darkTertiary : AppColors.green) : scheme.onSurfaceVariant;
+    final dirty = _manualOpen != s.manualOpen ||
+        _hoursEnabled != s.hoursEnabled ||
+        (_hoursEnabled && _sortedHours().toString() != s.openingHours.toString());
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          Icon(s.isOpen ? Icons.storefront_rounded : Icons.door_front_door_outlined, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.w900, color: scheme.onSurface)),
+                if (dirty)
+                  Text('Modifications pas encore enregistrées',
+                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// « à 22:00 » (aujourd'hui), « demain à 10:00 » ou « lundi à 10:00 ».
+  static String _when(DateTime d) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final days = DateTime(d.year, d.month, d.day).difference(today).inDays;
+    final time = '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    if (days <= 0) return 'à $time';
+    // Fermeture à minuit (« 24:00 ») : affichée le jour même.
+    if (days == 1 && d.hour == 0 && d.minute == 0) return 'à minuit';
+    if (days == 1) return 'demain à $time';
+    return '${frenchWeekday(d.weekday)} à $time';
+  }
+
+  /// Frais de livraison : prix fixe ou selon la distance (base + prix par km au-delà des km inclus).
+  List<Widget> _deliveryFeeFields() {
+    final scheme = Theme.of(context).colorScheme;
+    final byDistance = _feeMode == 'distance';
+    void refresh(String _) => setState(() {});
+    return [
+      SegmentedButton<String>(
+        segments: const [
+          ButtonSegment(value: 'fixed', label: Text('Prix fixe'), icon: Icon(Icons.payments_outlined)),
+          ButtonSegment(value: 'distance', label: Text('Selon la distance'), icon: Icon(Icons.route_rounded)),
+        ],
+        selected: {_feeMode},
+        onSelectionChanged: (v) => setState(() => _feeMode = v.first),
+      ),
+      const SizedBox(height: 14),
+      TextFormField(
+        controller: _fee,
+        keyboardType: TextInputType.number,
+        onChanged: refresh,
+        decoration: InputDecoration(
+          labelText: byDistance ? 'Prix de base' : 'Frais de livraison',
+          helperText: byDistance ? 'Comprend les premiers kilomètres (km inclus)' : 'Même prix pour toutes les adresses',
+          suffixText: 'FCFA',
+        ),
+        validator: _amount,
+      ),
+      if (byDistance) ...[
+        const SizedBox(height: 14),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _freeKm,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                onChanged: refresh,
+                decoration: const InputDecoration(labelText: 'Km inclus', suffixText: 'km'),
+                validator: (v) {
+                  final n = _parseKm(v);
+                  return n == null || n < 0 || n > 100 ? 'Entre 0 et 100' : null;
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _perKm,
+                keyboardType: TextInputType.number,
+                onChanged: refresh,
+                decoration: const InputDecoration(labelText: 'Prix par km', suffixText: 'FCFA'),
+                validator: (v) {
+                  final n = int.tryParse(v?.trim() ?? '');
+                  return n == null || n < 0 || n > 50000 ? 'Entre 0 et 50 000' : null;
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        TextFormField(
+          controller: _maxKm,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onChanged: refresh,
+          decoration: const InputDecoration(
+            labelText: 'Distance maximale',
+            helperText: '0 = illimitée. Au-delà, la commande en livraison est refusée.',
+            helperMaxLines: 2,
+            suffixText: 'km',
+          ),
+          validator: (v) {
+            final n = _parseKm(v);
+            return n == null || n < 0 || n > 200 ? 'Entre 0 et 200' : null;
+          },
+        ),
+        const SizedBox(height: 12),
+        _feeExamples(scheme),
+      ],
+    ];
+  }
+
+  /// Exemples calculés en direct : « 5 km → 1 600 FCFA ».
+  Widget _feeExamples(ColorScheme scheme) {
+    final base = int.tryParse(_fee.text.trim());
+    final perKm = int.tryParse(_perKm.text.trim());
+    final freeKm = _parseKm(_freeKm.text);
+    final maxKm = _parseKm(_maxKm.text) ?? 0;
+    final valid = base != null && perKm != null && freeKm != null;
+    const samples = [2.0, 5.0, 8.0, 12.0];
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.calculate_outlined, size: 18, color: scheme.onSurfaceVariant),
+              const SizedBox(width: 8),
+              Text('Exemples', style: TextStyle(fontWeight: FontWeight.w800, color: scheme.onSurface)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (!valid)
+            Text('Renseignez le prix de base, les km inclus et le prix par km.',
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13))
+          else
+            for (final km in samples)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  maxKm > 0 && km > maxKm
+                      ? '${_km(km)} km → hors zone (maximum ${_km(maxKm)} km)'
+                      : '${_km(km)} km → ${formatPrice(estimateDeliveryFee(base: base, perKm: perKm, freeKm: freeKm, km: km))}',
+                  style: TextStyle(color: scheme.onSurface, fontFeatures: const [FontFeature.tabularFigures()]),
+                ),
+              ),
+          const SizedBox(height: 6),
+          Text(
+            'Distance estimée par le serveur (trajet ≈ 1,3 × la distance à vol d\'oiseau), '
+            'arrondie aux 50 FCFA supérieurs.',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -424,31 +704,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : Form(
               key: _formKey,
               child: ListView(
-                padding: const EdgeInsets.all(20),
+                // Tablette : formulaire centré, largeur limitée (téléphone : marges inchangées).
+                padding: EdgeInsets.symmetric(
+                  vertical: 20,
+                  horizontal: MediaQuery.sizeOf(context).width > 800 ? (MediaQuery.sizeOf(context).width - 760) / 2 : 20,
+                ),
                 children: [
+                  _openStateCard(),
+                  const SizedBox(height: 12),
                   Card(
-                    color: _isOpen
+                    color: _manualOpen
                         ? AppColors.green.withValues(alpha: 0.12)
                         : Theme.of(context).colorScheme.surfaceContainerHighest,
                     child: SwitchListTile(
-                      value: _isOpen,
+                      value: _manualOpen,
                       activeTrackColor: AppColors.green,
-                      onChanged: (v) => setState(() => _isOpen = v),
-                      title: Text(_isOpen ? 'Restaurant ouvert' : 'Restaurant fermé',
-                          style: const TextStyle(fontWeight: FontWeight.w900)),
-                      subtitle: Text(_isOpen
-                          ? 'Les clients peuvent commander'
-                          : 'Les nouvelles commandes sont bloquées'),
+                      onChanged: (v) => setState(() => _manualOpen = v),
+                      title: const Text('Ouvert (interrupteur manuel)', style: TextStyle(fontWeight: FontWeight.w900)),
+                      subtitle: Text(_manualOpen
+                          ? (_hoursEnabled
+                              ? 'Les clients peuvent commander pendant les horaires d\'ouverture'
+                              : 'Les clients peuvent commander')
+                          : 'Fermé quoi qu\'il arrive : les nouvelles commandes sont bloquées'),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _fee,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Frais de livraison', suffixText: 'FCFA'),
-                    validator: _amount,
+                  const SizedBox(height: 24),
+                  const Text("Horaires d'ouverture", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: SwitchListTile(
+                      value: _hoursEnabled,
+                      activeTrackColor: AppColors.green,
+                      onChanged: (v) => setState(() => _hoursEnabled = v),
+                      title: const Text('Horaires automatiques', style: TextStyle(fontWeight: FontWeight.w800)),
+                      subtitle: Text(_hoursEnabled
+                          ? 'Le restaurant ouvre et ferme tout seul selon les horaires ci-dessous (heure de Lomé)'
+                          : "Désactivé : seul l'interrupteur manuel compte"),
+                    ),
                   ),
-                  const SizedBox(height: 14),
+                  if (_hoursEnabled) ...[
+                    const SizedBox(height: 8),
+                    OpeningHoursEditor(
+                      hours: _hours,
+                      onChanged: (h) => setState(() => _hours = h),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  const Text('Restaurant', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 12),
                   TextFormField(
                     controller: _min,
                     keyboardType: TextInputType.number,
@@ -472,6 +775,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 24),
                   const Text('Livraison', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                   const SizedBox(height: 12),
+                  ..._deliveryFeeFields(),
+                  const SizedBox(height: 14),
                   TextFormField(
                     controller: _autoConfirmHours,
                     keyboardType: TextInputType.number,

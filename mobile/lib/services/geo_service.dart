@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config.dart';
+import 'api.dart';
 
 /// Une suggestion de lieu affichée pendant la recherche.
 /// Google : [placeId] renseigné (coordonnées via [GeoService.placeDetails]).
@@ -292,7 +293,19 @@ class GeoService {
   // ---------------------------------------------------------------- Géocodage inverse
 
   /// Adresse lisible d'un point. `null` si introuvable.
+  /// D'abord le proxy du serveur (cache partagé, respect des règles Nominatim), puis,
+  /// s'il échoue, l'appel direct (Google si clé, sinon Nominatim).
   Future<String?> reverse(double lat, double lng) async {
+    final proxied = await _proxyReverse(lat, lng);
+    if (proxied.ok) {
+      if (proxied.address != null || !hasGoogleMapsKey) return proxied.address;
+      // Aucune adresse OpenStreetMap : Google a peut-être mieux.
+      try {
+        return await _googleReverse(lat, lng);
+      } catch (_) {
+        return null;
+      }
+    }
     if (hasGoogleMapsKey) {
       try {
         return await _googleReverse(lat, lng);
@@ -359,7 +372,7 @@ class GeoService {
     if (cached != null) return Future.value(cached);
     final pending = _routeInFlight[key];
     if (pending != null) return pending;
-    final future = _computeRoute(from, to).timeout(_timeout, onTimeout: () => null).catchError((Object _) => null);
+    final future = _computeRoute(from, to).timeout(_routeTimeout, onTimeout: () => null).catchError((Object _) => null);
     _routeInFlight[key] = future;
     return future.then((r) {
       _routeInFlight.remove(key);
@@ -378,6 +391,13 @@ class GeoService {
   static String _routeKey(LatLng p) => '${p.latitude.toStringAsFixed(4)},${p.longitude.toStringAsFixed(4)}';
 
   Future<RouteResult?> _computeRoute(LatLng from, LatLng to) async {
+    // Proxy du serveur (OSRM avec cache) ; en cas d'échec, appels directs comme avant.
+    try {
+      final proxied = await _proxyRoute(from, to);
+      if (proxied != null) return proxied;
+    } catch (_) {
+      // Serveur injoignable ou itinéraire refusé (502) : repli ci-dessous.
+    }
     if (hasGoogleMapsKey) {
       for (final mode in const ['TWO_WHEELER', 'DRIVE']) {
         try {
@@ -501,6 +521,63 @@ class GeoService {
       // Fin corrompue : on garde les points déjà lus.
     }
     return points;
+  }
+
+  // ---------------------------------------------------------------- Proxy serveur
+
+  static const _proxyTimeout = Duration(seconds: 9);
+
+  /// Délai total d'un itinéraire : proxy (9 s) puis, en repli, les appels directs.
+  static const _routeTimeout = Duration(seconds: 20);
+
+  /// GET authentifié sur le proxy cartographique du serveur. Sans session : pas d'appel.
+  /// N'utilise pas [Api] : un proxy indisponible ne doit ni déconnecter (401) ni ouvrir
+  /// le disjoncteur des autres requêtes.
+  Future<dynamic> _proxyGet(String path, Map<String, String> query) async {
+    final token = Api.instance.token;
+    if (token == null) throw GeoException('proxy : non connecté');
+    final uri = Uri.parse('$apiBaseUrl/api$path').replace(queryParameters: query);
+    final res = await _client.get(uri, headers: {'Authorization': 'Bearer $token'}).timeout(_proxyTimeout);
+    if (res.statusCode != 200) throw GeoException('proxy ${res.statusCode}');
+    return jsonDecode(utf8.decode(res.bodyBytes));
+  }
+
+  /// Adresse via GET /api/geo/reverse. [ok] faux si le proxy a échoué (repli à faire).
+  Future<({bool ok, String? address})> _proxyReverse(double lat, double lng) async {
+    try {
+      final data = await _proxyGet('/geo/reverse', {
+        'lat': lat.toStringAsFixed(6),
+        'lng': lng.toStringAsFixed(6),
+      });
+      if (data is! Map) return (ok: false, address: null);
+      final a = data['address'];
+      return (ok: true, address: a is String && a.trim().isNotEmpty ? a.trim() : null);
+    } catch (_) {
+      return (ok: false, address: null);
+    }
+  }
+
+  /// Itinéraire via GET /api/geo/route (`{distance_m, duration_s, points: [[lat, lng], ...]}`).
+  Future<RouteResult?> _proxyRoute(LatLng from, LatLng to) async {
+    String c(LatLng p) => '${p.latitude.toStringAsFixed(6)},${p.longitude.toStringAsFixed(6)}';
+    final data = await _proxyGet('/geo/route', {'from': c(from), 'to': c(to)});
+    if (data is! Map) return null;
+    final raw = data['points'];
+    if (raw is! List) return null;
+    final points = <LatLng>[];
+    for (final p in raw) {
+      if (p is! List || p.length < 2) continue;
+      final lat = _toDouble(p[0]);
+      final lng = _toDouble(p[1]);
+      if (lat != null && lng != null) points.add(LatLng(lat, lng));
+    }
+    if (points.length < 2) return null;
+    return RouteResult(
+      points: points,
+      distanceMeters: _toDouble(data['distance_m'])?.round() ?? 0,
+      durationSeconds: _toDouble(data['duration_s'])?.round() ?? 0,
+      source: 'osrm',
+    );
   }
 
   // ---------------------------------------------------------------- Outils

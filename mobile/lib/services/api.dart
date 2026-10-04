@@ -474,7 +474,27 @@ class Api {
     return result;
   }
 
+  /// Devis des frais de livraison pour une position (public, jamais en cache).
+  /// Le montant définitif est recalculé par le serveur à la création de la commande.
+  Future<DeliveryQuote> deliveryQuote({double? lat, double? lng}) async {
+    _log('Fetching delivery quote');
+    final query = <String, String>{
+      if (lat != null && lng != null) 'lat': lat.toStringAsFixed(6),
+      if (lat != null && lng != null) 'lng': lng.toStringAsFixed(6),
+    };
+    final r = await get('/delivery/quote', query.isEmpty ? null : query);
+    return DeliveryQuote.fromJson(Map<String, dynamic>.from(r as Map));
+  }
+
   // ---------- Commandes ----------
+
+  /// Change l'opérateur mobile money ('flooz' ou 'mixx') d'une commande pas encore payée :
+  /// le serveur recalcule les frais et le total.
+  Future<Order> changePaymentMethod(int orderId, String method) async {
+    _log('Changing payment method of order $orderId');
+    _cache.remove('/orders');
+    return Order.fromJson(await post('/orders/$orderId/payment-method', {'payment_method': method}));
+  }
 
   /// Create a new order
   Future<Order> createOrder(Map<String, dynamic> data) async {
